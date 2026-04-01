@@ -1,0 +1,822 @@
+# ============================================================
+# Hay Straw Length Measurement Workflow
+# ============================================================
+# MODES:
+#   1. HSV Mode   — classic color segmentation (no model needed)
+#   2. YOLO Mode  — YOLOv8 instance segmentation (requires trained model)
+#
+# OVERLAP SEPARATION:
+#   When straws cross, their skeletons merge at a branch point,
+#   producing 4+ endpoints instead of 2. This script:
+#     1. Finds all skeleton endpoints in an overlap region
+#     2. Computes the angle each endpoint "points away" from the crossing
+#     3. Clusters endpoints that are angularly opposite (~180° apart)
+#        and within a spatial proximity radius
+#     4. Pairs them as belonging to the same straw piece
+#     5. Traces the Dijkstra path between each valid pair
+#   This reconstructs individual straw lengths through crossings.
+# ============================================================
+
+import cv2
+import numpy as np
+import os
+import sys
+import time
+import heapq
+import logging
+import pandas as pd
+from skimage.morphology import skeletonize
+from scipy.spatial.distance import cdist
+from scipy import ndimage as ndi
+from tkinter import Tk, filedialog
+from itertools import combinations
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+DETECTION_MODE   = "hsv"            # "hsv" or "yolo"
+YOLO_MODEL_PATH  = "straw_model.pt" # Path to trained YOLOv8 model
+YOLO_CONF        = 0.25             # YOLO confidence threshold
+
+PIXEL_TO_MM      = 0.1              # Default calibration (mm per pixel)
+MIN_CONTOUR_AREA = 100              # Minimum contour area in pixels
+CURVE_THRESHOLD  = 1.1              # path/euclidean ratio → "Curved"
+DEBUG_MODE       = True             # Show debug windows
+LOG_FILE         = "straw_debug.log"
+
+# --- Debugger file bypass ---
+# Tkinter's file picker hangs in the VS Code debugger because it needs
+# a GUI main thread. Populate this list with absolute paths to your
+# images to skip the picker entirely when debugging.
+# Leave as [] when running normally — the picker will open as usual.
+DEBUG_FILES = [
+    # r"C:\Users\Logan\Downloads\IMG_2466.jpg",
+    # r"C:\Users\Logan\Downloads\IMG_2466.jpg",
+]
+
+# --- Endpoint clustering parameters ---
+# Angle tolerance: two endpoints are "opposite" if their angles
+# (measured from the branch centroid) differ by 180° ± this value.
+ANGLE_TOLERANCE_DEG  = 35.0
+
+# Spatial radius: how far apart two endpoints can be (in pixels)
+# and still be considered part of the same crossing region.
+CLUSTER_RADIUS_PX    = 80
+
+# Minimum skeleton path length to count as a real straw (pixels).
+# Prevents tiny fragments from being reported as straw pieces.
+MIN_PATH_LENGTH_PX   = 20
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, mode='w'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+log = logging.getLogger(__name__)
+
+def debug_step(name, image, wait=200):
+    if DEBUG_MODE and image is not None:
+        cv2.imshow(f"DEBUG: {name}", image)
+        cv2.waitKey(wait)
+
+# ============================================================
+# YOLO LOADER
+# ============================================================
+
+def load_yolo_model(model_path):
+    try:
+        from ultralytics import YOLO
+        if not os.path.exists(model_path):
+            log.warning(f"YOLO model not found at '{model_path}'. Falling back to HSV.")
+            return None
+        model = YOLO(model_path)
+        log.info(f"YOLO model loaded: {model_path}")
+        return model
+    except ImportError:
+        log.warning("ultralytics not installed (pip install ultralytics). Falling back to HSV.")
+        return None
+    except Exception as e:
+        log.warning(f"YOLO load failed: {e}. Falling back to HSV.")
+        return None
+
+# ============================================================
+# FILE PICKER
+# ============================================================
+
+def select_files():
+    # If DEBUG_FILES is populated, skip the Tkinter picker entirely.
+    # This avoids the GUI-thread hang when running in the VS Code debugger.
+    if DEBUG_FILES:
+        valid = [f for f in DEBUG_FILES if os.path.exists(f)]
+        missing = [f for f in DEBUG_FILES if not os.path.exists(f)]
+        if missing:
+            for m in missing:
+                log.warning(f"DEBUG_FILES: file not found — {m}")
+        log.info(f"DEBUG_FILES mode: using {len(valid)} file(s)")
+        return valid
+
+    log.info("Opening file picker...")
+    try:
+        root = Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)   # bring dialog to front
+        files = list(filedialog.askopenfilenames(
+            filetypes=[("Image files", "*.jpg *.jpeg *.png"), ("JPG files", "*.jpg")]
+        ))
+        root.destroy()
+    except Exception as e:
+        log.error(f"File picker failed: {e}")
+        log.error("Try adding your image paths to DEBUG_FILES in the config section.")
+        return []
+    log.info(f"Selected {len(files)} file(s)")
+    return files
+
+# ============================================================
+# CALIBRATION
+# ============================================================
+
+def get_calibration():
+    print("\n--- CALIBRATION ---")
+    print(f"Default pixel-to-mm ratio: {PIXEL_TO_MM}")
+    user_input = input("Enter mm per pixel or press Enter for default: ").strip()
+    if user_input:
+        try:
+            cal = float(user_input)
+            log.info(f"Calibration set: {cal} mm/pixel")
+            return cal
+        except ValueError:
+            log.warning("Invalid input. Using default.")
+    log.info(f"Using default: {PIXEL_TO_MM} mm/pixel")
+    return PIXEL_TO_MM
+
+# ============================================================
+# HSV TUNING WINDOW
+# ============================================================
+
+def get_hsv(sample_path):
+    """Real-time HSV tuning with callback-driven instant updates."""
+    log.info(f"Opening HSV tuning: {sample_path}")
+    img = cv2.imread(sample_path)
+    if img is None:
+        log.error(f"Could not read: {sample_path}")
+        sys.exit(1)
+    img = cv2.resize(img, (800, 600))
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+    WIN = "HSV Tuning  (Q to confirm)"
+    cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WIN, 800, 700)
+    state = {"H Min": 0, "H Max": 179, "S Min": 0, "S Max": 255, "V Min": 0, "V Max": 255}
+
+    def update(_=None):
+        lower = np.array([state["H Min"], state["S Min"], state["V Min"]])
+        upper = np.array([state["H Max"], state["S Max"], state["V Max"]])
+        mask  = cv2.inRange(hsv, lower, upper)
+        ov    = img.copy(); ov[mask == 0] = (40, 40, 40)
+        hl    = img.copy(); hl[mask > 0]  = (0, 220, 80)
+        bl    = cv2.addWeighted(img, 0.5, hl, 0.5, 0)
+        mb    = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        top   = np.hstack([img, ov])
+        bot   = np.hstack([bl,  mb])
+        for panel, label, pos in [
+            (top, "Original",        (10, 25)), (top, "Masked Overlay",  (810, 25)),
+            (bot, "Green Highlight", (10, 25)), (bot, "Binary Mask",     (810, 25)),
+        ]:
+            cv2.putText(panel, label, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
+            cv2.putText(panel, label, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,0),       1, cv2.LINE_AA)
+        cv2.imshow(WIN, cv2.resize(np.vstack([top, bot]), (800, 600)))
+        px = int(np.sum(mask > 0))
+        print(f"\r  HSV [{state['H Min']:3d}-{state['H Max']:3d}]"
+              f"[{state['S Min']:3d}-{state['S Max']:3d}]"
+              f"[{state['V Min']:3d}-{state['V Max']:3d}]  px:{px:6d}",
+              end="", flush=True)
+
+    def make_cb(key):
+        def cb(val): state[key] = val; update()
+        return cb
+
+    for name, maxv, default in [
+        ("H Min",179,0),("H Max",179,179),("S Min",255,0),
+        ("S Max",255,255),("V Min",255,0),("V Max",255,255)
+    ]:
+        cv2.createTrackbar(name, WIN, default, maxv, make_cb(name))
+
+    print("\n--- HSV TUNING ---\nMove sliders — updates instantly. Q to confirm.\n")
+    update()
+    while True:
+        if cv2.waitKey(50) & 0xFF in (ord('q'), ord('s'), 27):
+            break
+    cv2.destroyAllWindows(); print()
+    lower = np.array([state["H Min"], state["S Min"], state["V Min"]])
+    upper = np.array([state["H Max"], state["S Max"], state["V Max"]])
+    log.info(f"HSV Lower: {lower}  Upper: {upper}")
+    return lower, upper
+
+# ============================================================
+# MASK EXTRACTION — HSV
+# ============================================================
+
+def get_masks_hsv(image, hsv_lower, hsv_upper):
+    hsv  = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, hsv_lower, hsv_upper)
+    debug_step("HSV Raw Mask", mask)
+    kernel = np.ones((3,3), np.uint8)
+    mask   = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
+    mask   = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    debug_step("HSV After Morphology", mask)
+    dist   = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    _, sfg = cv2.threshold(dist, 0.5 * dist.max(), 255, 0)
+    sfg    = np.uint8(sfg)
+    unk    = cv2.subtract(mask, sfg)
+    mrk, n = ndi.label(sfg)
+    log.debug(f"HSV watershed markers: {n}")
+    mrk    = mrk + 1; mrk[unk == 255] = 0
+    mrk    = cv2.watershed(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR), mrk)
+    mask[mrk == -1] = 0
+    debug_step("HSV After Watershed", mask)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    log.info(f"HSV contours: {len(contours)}")
+    masks = []
+    for cnt in contours:
+        if cv2.contourArea(cnt) < MIN_CONTOUR_AREA:
+            continue
+        m = np.zeros(mask.shape, np.uint8)
+        cv2.drawContours(m, [cnt], -1, 255, -1)
+        masks.append({"mask": m, "confidence": 1.0, "source": "hsv"})
+    log.info(f"HSV valid masks: {len(masks)}")
+    return masks
+
+# ============================================================
+# MASK EXTRACTION — YOLO
+# ============================================================
+
+def get_masks_yolo(image, model, conf_threshold):
+    h, w    = image.shape[:2]
+    results = model(image, conf=conf_threshold, verbose=False)[0]
+    masks   = []
+    if results.masks is None:
+        log.warning("YOLO: no masks returned.")
+        return masks
+    log.info(f"YOLO detections: {len(results.masks.data)}")
+    for idx, (mt, box) in enumerate(zip(results.masks.data, results.boxes)):
+        conf = float(box.conf[0])
+        m    = mt.cpu().numpy()
+        m    = (m * 255).astype(np.uint8)
+        m    = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+        _, m = cv2.threshold(m, 127, 255, cv2.THRESH_BINARY)
+        if np.sum(m > 0) < MIN_CONTOUR_AREA:
+            continue
+        masks.append({"mask": m, "confidence": conf, "source": "yolo"})
+    if DEBUG_MODE and masks:
+        combined = np.zeros((h, w), np.uint8)
+        for e in masks: combined = cv2.bitwise_or(combined, e["mask"])
+        debug_step("YOLO Combined Masks", combined)
+    return masks
+
+# ============================================================
+# DIJKSTRA
+# ============================================================
+
+def dijkstra(graph, start, end):
+    queue = [(0, start)]
+    dist  = {n: float('inf') for n in graph}
+    dist[start] = 0
+    while queue:
+        d, cur = heapq.heappop(queue)
+        if cur == end: return d
+        for nb in graph[cur]:
+            nd = d + np.linalg.norm(np.array(cur) - np.array(nb))
+            if nd < dist[nb]:
+                dist[nb] = nd
+                heapq.heappush(queue, (nd, nb))
+    return float('inf')
+
+def dijkstra_path(graph, start, end):
+    """Returns (distance, [list of nodes on path])."""
+    queue = [(0, start, [start])]
+    dist  = {n: float('inf') for n in graph}
+    dist[start] = 0
+    while queue:
+        d, cur, path = heapq.heappop(queue)
+        if cur == end: return d, path
+        for nb in graph[cur]:
+            nd = d + np.linalg.norm(np.array(cur) - np.array(nb))
+            if nd < dist[nb]:
+                dist[nb] = nd
+                heapq.heappush(queue, (nd, nb, path + [nb]))
+    return float('inf'), []
+
+# ============================================================
+# SKELETON GRAPH BUILDER
+# ============================================================
+
+def build_graph(points):
+    """Build adjacency graph from skeleton point array."""
+    pts = np.array(points)
+    graph = {}
+    for p in pts:
+        tp = tuple(p)
+        graph[tp] = [
+            tuple(q) for q in pts
+            if 0 < np.linalg.norm(p - q) <= np.sqrt(2)
+        ]
+    return graph
+
+# ============================================================
+# ENDPOINT & BRANCH DETECTION
+# ============================================================
+
+def classify_skeleton_points(points):
+    """
+    Classify every skeleton pixel by neighbor count:
+      1 neighbor  → endpoint
+      2 neighbors → body
+      3+ neighbors → branch point (crossing/junction)
+    Returns: endpoints, body_points, branch_points (all as lists of tuples)
+    """
+    point_set = set(map(tuple, points))
+    dirs = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+    endpoints, body, branches = [], [], []
+    for p in points:
+        n = sum(1 for d in dirs if (p[0]+d[0], p[1]+d[1]) in point_set)
+        tp = tuple(p)
+        if   n == 1: endpoints.append(tp)
+        elif n >= 3: branches.append(tp)
+        else:        body.append(tp)
+    log.debug(f"  Skeleton — endpoints: {len(endpoints)}  "
+              f"branch pts: {len(branches)}  body: {len(body)}")
+    return endpoints, body, branches
+
+# ============================================================
+# ENDPOINT ANGLE COMPUTATION
+# ============================================================
+
+def endpoint_exit_angle(ep, graph, look_ahead=8):
+    """
+    Walk up to `look_ahead` steps along the skeleton from an endpoint
+    and compute the direction angle (degrees) the straw is heading.
+    This tells us which direction the straw exits the crossing region.
+    """
+    path  = [ep]
+    visited = {ep}
+    current = ep
+    for _ in range(look_ahead):
+        neighbors = [nb for nb in graph.get(current, []) if nb not in visited]
+        if not neighbors:
+            break
+        # Follow the neighbor that continues the skeleton (not back-tracking)
+        current = neighbors[0]
+        visited.add(current)
+        path.append(current)
+
+    if len(path) < 2:
+        return 0.0
+
+    # Direction from endpoint outward along the straw body
+    dy = path[-1][0] - path[0][0]   # row difference
+    dx = path[-1][1] - path[0][1]   # col difference
+    angle = np.degrees(np.arctan2(dy, dx))
+    return angle
+
+# ============================================================
+# ENDPOINT CLUSTERING & PAIRING  ← core new feature
+# ============================================================
+
+def cluster_and_pair_endpoints(endpoints, branch_points, graph):
+    """
+    Given all skeleton endpoints and branch points from an overlap region:
+
+    1. Find the spatial centroid of branch points (the crossing centre).
+    2. For each endpoint, compute:
+         - distance from crossing centre
+         - exit angle (direction straw heads away from crossing)
+    3. Keep only endpoints within CLUSTER_RADIUS_PX of the crossing.
+    4. Pair endpoints whose exit angles differ by ~180° ± ANGLE_TOLERANCE_DEG.
+       These are angularly opposite → likely the two ends of one straw.
+    5. Among all valid pairings, greedily assign non-overlapping pairs
+       (each endpoint used at most once).
+
+    Returns list of (ep_a, ep_b) tuples representing straw pairs.
+    """
+    if not branch_points or len(endpoints) < 2:
+        return []
+
+    # Crossing centroid
+    bp_arr   = np.array(branch_points)
+    centroid = bp_arr.mean(axis=0)
+    log.debug(f"  Crossing centroid: {centroid}")
+
+    # Filter endpoints near the crossing
+    nearby = []
+    for ep in endpoints:
+        dist = np.linalg.norm(np.array(ep) - centroid)
+        if dist <= CLUSTER_RADIUS_PX:
+            angle = endpoint_exit_angle(ep, graph)
+            nearby.append({"ep": ep, "dist": dist, "angle": angle})
+            log.debug(f"    EP {ep}  dist={dist:.1f}px  angle={angle:.1f}°")
+
+    if len(nearby) < 2:
+        log.debug("  Not enough nearby endpoints to pair.")
+        return []
+
+    # Score all pairs by angular compatibility
+    scored_pairs = []
+    for a, b in combinations(nearby, 2):
+        angle_diff = abs(a["angle"] - b["angle"])
+        # Normalise to 0–180 range
+        angle_diff = min(angle_diff, 360 - angle_diff)
+        deviation  = abs(angle_diff - 180.0)
+        if deviation <= ANGLE_TOLERANCE_DEG:
+            # Lower deviation = better pair
+            scored_pairs.append((deviation, a["ep"], b["ep"]))
+            log.debug(f"  Candidate pair {a['ep']} ↔ {b['ep']}  "
+                      f"angle_diff={angle_diff:.1f}°  deviation={deviation:.1f}°")
+
+    if not scored_pairs:
+        log.debug("  No angularly compatible endpoint pairs found.")
+        return []
+
+    # Greedy assignment — best pairs first, each endpoint used once
+    scored_pairs.sort(key=lambda x: x[0])
+    used   = set()
+    pairs  = []
+    for deviation, ep_a, ep_b in scored_pairs:
+        if ep_a not in used and ep_b not in used:
+            pairs.append((ep_a, ep_b))
+            used.add(ep_a)
+            used.add(ep_b)
+            log.debug(f"  ✓ Accepted pair {ep_a} ↔ {ep_b}  deviation={deviation:.1f}°")
+
+    log.info(f"  Endpoint pairing: {len(nearby)} nearby endpoints → {len(pairs)} straw pair(s)")
+    return pairs
+
+# ============================================================
+# VISUALISE ENDPOINT CLUSTERING (debug)
+# ============================================================
+
+def draw_endpoint_debug(overlay, endpoints, branch_points, pairs, centroid=None):
+    """Draw endpoints, branch points, centroid, and accepted pairs onto overlay."""
+    # Branch points — cyan
+    for bp in branch_points:
+        cv2.circle(overlay, (bp[1], bp[0]), 3, (0, 255, 255), -1)
+
+    # All endpoints — yellow
+    for ep in endpoints:
+        cv2.circle(overlay, (ep[1], ep[0]), 5, (0, 220, 220), 1)
+
+    # Crossing centroid — white cross
+    if centroid is not None:
+        cx, cy = int(centroid[1]), int(centroid[0])
+        cv2.drawMarker(overlay, (cx, cy), (255,255,255),
+                       cv2.MARKER_CROSS, 12, 2)
+
+    # Accepted pairs — bright magenta line between paired endpoints
+    colors = [(255,0,255),(255,128,0),(0,255,128),(128,0,255),(255,255,0)]
+    for idx, (ep_a, ep_b) in enumerate(pairs):
+        col = colors[idx % len(colors)]
+        cv2.line(overlay, (ep_a[1], ep_a[0]), (ep_b[1], ep_b[0]), col, 1)
+        cv2.circle(overlay, (ep_a[1], ep_a[0]), 6, col, 2)
+        cv2.circle(overlay, (ep_b[1], ep_b[0]), 6, col, 2)
+
+# ============================================================
+# MEASURE A SINGLE STRAW FROM TWO PAIRED ENDPOINTS
+# ============================================================
+
+def measure_straw_pair(ep_a, ep_b, graph, all_points, straw_id,
+                       pixel_to_mm, overlay, source, yolo_conf,
+                       is_reconstructed=False):
+    """
+    Measure the straw length between two paired endpoints using Dijkstra.
+    Draws the traced path onto overlay.
+    Returns a result dict or None.
+    """
+    path_len, path_nodes = dijkstra_path(graph, ep_a, ep_b)
+
+    if path_len == float('inf') or path_len < MIN_PATH_LENGTH_PX:
+        log.debug(f"  Pair {ep_a}↔{ep_b}: path={path_len:.1f}px — too short or disconnected.")
+        return None
+
+    euclid = np.linalg.norm(np.array(ep_a) - np.array(ep_b))
+    if euclid == 0:
+        return None
+
+    ratio     = path_len / euclid
+    shape     = "Curved" if ratio > CURVE_THRESHOLD else "Straight"
+    length_mm = path_len * pixel_to_mm
+
+    # Confidence
+    if is_reconstructed:
+        confidence = "RECONSTRUCTED"
+    elif source == "yolo":
+        confidence = "HIGH" if yolo_conf >= 0.7 else "MEDIUM" if yolo_conf >= 0.4 else "LOW"
+    else:
+        confidence = "HIGH"
+
+    log.info(f"  Straw {straw_id}: {length_mm:.2f}mm | {shape} | {confidence} "
+             f"| reconstructed={is_reconstructed}")
+
+    # Draw traced path
+    path_color = (0, 140, 255) if is_reconstructed else (0, 200, 255)
+    for node in path_nodes:
+        overlay[node[0], node[1]] = path_color
+
+    # Endpoints
+    ep_color = (255, 80, 0) if is_reconstructed else (0, 255, 0)
+    cv2.circle(overlay, (ep_a[1], ep_a[0]), 5, ep_color, -1)
+    cv2.circle(overlay, (ep_b[1], ep_b[0]), 5, ep_color, -1)
+
+    # Label
+    cx = int((ep_a[1] + ep_b[1]) / 2)
+    cy = int((ep_a[0] + ep_b[0]) / 2) - 8
+    tag = "R" if is_reconstructed else ""
+    cv2.putText(overlay, f"#{straw_id}{tag} {length_mm:.1f}mm [{confidence}]",
+                (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255,255,255), 1, cv2.LINE_AA)
+
+    return {
+        "Straw_ID":             straw_id,
+        "Length_mm":            round(length_mm, 3),
+        "Shape":                shape,
+        "Overlap_Detected":     is_reconstructed,
+        "Reconstructed":        is_reconstructed,
+        "Confidence":           confidence,
+        "Detection_Source":     source,
+        "YOLO_Conf":            round(yolo_conf, 3) if source == "yolo" else "N/A",
+        "Skeleton_Pixels":      len(path_nodes),
+        "Path_Euclidean_Ratio": round(ratio, 4),
+        "Pixel_to_mm_Used":     pixel_to_mm,
+    }
+
+# ============================================================
+# MEASURE ONE MASK  (main per-straw entry point)
+# ============================================================
+
+def measure_mask(mask_entry, base_straw_id, pixel_to_mm, overlay):
+    """
+    Takes a single binary mask, skeletonizes it, classifies points,
+    then either:
+      A) Simple case (0 branch points): measure straight endpoint→endpoint.
+      B) Overlap case (branch points exist): run endpoint clustering,
+         pair endpoints angularly, measure each reconstructed straw.
+    Returns a list of result dicts (one per straw found in this mask).
+    """
+    m         = mask_entry["mask"]
+    yolo_conf = mask_entry["confidence"]
+    source    = mask_entry["source"]
+
+    # Skeletonize
+    skeleton = skeletonize(m // 255)
+    skeleton = (skeleton * 255).astype(np.uint8)
+    skel_px  = int(np.sum(skeleton > 0))
+    log.debug(f"  Skeleton pixels: {skel_px}")
+
+    if skel_px < 2:
+        log.warning(f"  Mask {base_straw_id}: skeleton too short, skipping.")
+        return []
+
+    points = np.column_stack(np.where(skeleton > 0))
+    endpoints, body_pts, branch_pts = classify_skeleton_points(points)
+    graph = build_graph(points)
+
+    results = []
+
+    # ----------------------------------------------------------
+    # CASE B: Overlap — use endpoint clustering to separate straws
+    # ----------------------------------------------------------
+    if branch_pts and len(endpoints) >= 2:
+        log.info(f"  Mask {base_straw_id}: overlap detected "
+                 f"({len(branch_pts)} branch pts, {len(endpoints)} endpoints) "
+                 f"— attempting reconstruction")
+
+        pairs = cluster_and_pair_endpoints(endpoints, branch_pts, graph)
+
+        # Draw debug visualisation
+        if branch_pts:
+            bp_arr   = np.array(branch_pts)
+            centroid = bp_arr.mean(axis=0)
+        else:
+            centroid = None
+        draw_endpoint_debug(overlay, endpoints, branch_pts, pairs, centroid)
+
+        if pairs:
+            for sub_id, (ep_a, ep_b) in enumerate(pairs):
+                straw_id = f"{base_straw_id}.{sub_id}"
+                res = measure_straw_pair(
+                    ep_a, ep_b, graph, points, straw_id,
+                    pixel_to_mm, overlay, source, yolo_conf,
+                    is_reconstructed=True
+                )
+                if res:
+                    results.append(res)
+
+            # If pairing worked, return those results
+            if results:
+                return results
+
+        # Pairing failed — fall through to simple measurement
+        log.warning(f"  Mask {base_straw_id}: pairing failed, "
+                    f"falling back to simple endpoint detection.")
+
+    # ----------------------------------------------------------
+    # CASE A: No overlap (or pairing failed) — simple measurement
+    # ----------------------------------------------------------
+    # Find best endpoint pair
+    if len(endpoints) >= 2:
+        pts = np.array(endpoints)
+        dm  = cdist(pts, pts)
+        idx = np.unravel_index(np.argmax(dm), dm.shape)
+        ep_a = tuple(pts[idx[0]])
+        ep_b = tuple(pts[idx[1]])
+        ep_method = "true_endpoint"
+    else:
+        pts = np.array(list(map(list, [tuple(p) for p in points])))
+        dm  = cdist(pts, pts)
+        idx = np.unravel_index(np.argmax(dm), dm.shape)
+        ep_a = tuple(pts[idx[0]])
+        ep_b = tuple(pts[idx[1]])
+        ep_method = "fallback_max_dist"
+
+    log.debug(f"  Simple measurement: {ep_a} → {ep_b} ({ep_method})")
+
+    res = measure_straw_pair(
+        ep_a, ep_b, graph, points, base_straw_id,
+        pixel_to_mm, overlay, source, yolo_conf,
+        is_reconstructed=False
+    )
+
+    # Add endpoint method to result
+    if res:
+        res["Endpoint_Method"] = ep_method
+        res["Overlap_Detected"] = len(branch_pts) > 0
+        results.append(res)
+
+    return results
+
+# ============================================================
+# PROCESS SINGLE IMAGE
+# ============================================================
+
+def process_image(image_path, pixel_to_mm, mode,
+                  hsv_lower=None, hsv_upper=None, yolo_model=None):
+
+    log.info(f"\n{'='*60}")
+    log.info(f"Processing [{mode.upper()}]: {os.path.basename(image_path)}")
+
+    image = cv2.imread(image_path)
+    if image is None:
+        log.error(f"Failed to load: {image_path}")
+        return [], None
+    image = cv2.resize(image, (800, 600))
+    debug_step("1 - Original", image)
+    overlay = image.copy()
+
+    if mode == "yolo" and yolo_model is not None:
+        mask_entries = get_masks_yolo(image, yolo_model, YOLO_CONF)
+    else:
+        if mode == "yolo":
+            log.warning("YOLO unavailable — falling back to HSV.")
+        mask_entries = get_masks_hsv(image, hsv_lower, hsv_upper)
+
+    log.info(f"Masks to process: {len(mask_entries)}")
+
+    all_results = []
+    for i, entry in enumerate(mask_entries):
+        log.debug(f"\n  === Mask {i} ===")
+        results = measure_mask(entry, i, pixel_to_mm, overlay)
+        for res in results:
+            res["Image"] = os.path.basename(image_path)
+            all_results.append(res)
+
+    log.info(f"Image done: {len(all_results)} straw(s) measured "
+             f"from {len(mask_entries)} mask(s).")
+
+    cv2.putText(overlay,
+                f"Mode: {mode.upper()}  |  Straws: {len(all_results)}  "
+                f"|  Masks: {len(mask_entries)}",
+                (10, 580), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200,200,200), 1, cv2.LINE_AA)
+
+    debug_step("Final Overlay", overlay, wait=800)
+    return all_results, overlay
+
+# ============================================================
+# SUMMARY
+# ============================================================
+
+def print_summary(df):
+    print("\n" + "="*60)
+    print("BATCH SUMMARY")
+    print("="*60)
+    print(f"Total straw measured    :  {len(df)}")
+    if len(df) > 0:
+        print(f"Average length (mm)     :  {df['Length_mm'].mean():.2f}")
+        print(f"Min / Max (mm)          :  {df['Length_mm'].min():.2f} / {df['Length_mm'].max():.2f}")
+        print(f"Straight / Curved       :  {(df['Shape']=='Straight').sum()} / {(df['Shape']=='Curved').sum()}")
+        print(f"Overlap detected        :  {df['Overlap_Detected'].sum()}")
+        if "Reconstructed" in df.columns:
+            print(f"Reconstructed (crossed) :  {df['Reconstructed'].sum()}")
+        print(f"HIGH confidence         :  {(df['Confidence']=='HIGH').sum()}")
+        print(f"MEDIUM confidence       :  {(df['Confidence']=='MEDIUM').sum()}")
+        print(f"LOW confidence          :  {(df['Confidence']=='LOW').sum()}")
+        print(f"RECONSTRUCTED           :  {(df['Confidence']=='RECONSTRUCTED').sum()}")
+        if "Detection_Source" in df.columns:
+            print(f"YOLO / HSV detections   :  "
+                  f"{(df['Detection_Source']=='yolo').sum()} / "
+                  f"{(df['Detection_Source']=='hsv').sum()}")
+    print("="*60 + "\n")
+
+# ============================================================
+# SAFE EXCEL SAVE
+# ============================================================
+
+def safe_save_excel(df, filename):
+    base_path = os.path.abspath(filename)
+    try:
+        df.to_excel(base_path, index=False)
+        return base_path
+    except PermissionError:
+        ts       = time.strftime("%Y%m%d_%H%M%S")
+        name,ext = os.path.splitext(base_path)
+        new_path = f"{name}_{ts}{ext}"
+        log.warning(f"'{base_path}' locked — saving to '{new_path}'")
+        print(f"\n  WARNING: File open in Excel. Saving to {os.path.basename(new_path)}\n")
+        df.to_excel(new_path, index=False)
+        return new_path
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+    t0 = time.time()
+    log.info("=== Straw Measurement Tool Started ===")
+    log.info(f"Detection mode: {DETECTION_MODE.upper()}")
+    log.info(f"Angle tolerance: {ANGLE_TOLERANCE_DEG}°  |  "
+             f"Cluster radius: {CLUSTER_RADIUS_PX}px")
+
+    files = select_files()
+    if not files:
+        log.error("No files selected.")
+        sys.exit(0)
+
+    pixel_to_mm = get_calibration()
+
+    mode       = DETECTION_MODE.lower()
+    yolo_model = None
+    hsv_lower  = hsv_upper = None
+
+    if mode == "yolo":
+        yolo_model = load_yolo_model(YOLO_MODEL_PATH)
+        if yolo_model is None:
+            mode = "hsv"
+
+    if mode == "hsv":
+        hsv_lower, hsv_upper = get_hsv(files[0])
+
+    all_results = []
+    for idx, f in enumerate(files):
+        log.info(f"\nImage {idx+1}/{len(files)}: {f}")
+        res, overlay = process_image(
+            f, pixel_to_mm, mode,
+            hsv_lower=hsv_lower, hsv_upper=hsv_upper,
+            yolo_model=yolo_model
+        )
+        all_results.extend(res)
+
+        if overlay is not None:
+            base    = os.path.splitext(os.path.basename(f))[0]
+            out_dir = os.path.dirname(os.path.abspath(f))
+            out_img = os.path.join(out_dir, f"overlay_{base}.jpg")
+            cv2.imwrite(out_img, overlay)
+            log.info(f"Overlay saved: {out_img}")
+            cv2.imshow(f"Result [{idx+1}/{len(files)}]: {os.path.basename(f)}", overlay)
+            cv2.waitKey(800)
+
+    cv2.destroyAllWindows()
+
+    df = pd.DataFrame(all_results)
+    if len(df) > 0:
+        col_order = [
+            "Image", "Straw_ID", "Length_mm", "Shape",
+            "Overlap_Detected", "Reconstructed", "Confidence",
+            "Detection_Source", "YOLO_Conf", "Endpoint_Method",
+            "Skeleton_Pixels", "Path_Euclidean_Ratio", "Pixel_to_mm_Used"
+        ]
+        df = df[[c for c in col_order if c in df.columns]]
+        xlsx = safe_save_excel(df, "straw_results.xlsx")
+        csv  = os.path.abspath("straw_results.csv")
+        df.to_csv(csv, index=False)
+        print_summary(df)
+        print(f"Results saved to:\n  Excel : {xlsx}\n  CSV   : {csv}")
+    else:
+        log.warning("No straw detected.")
+        print("\nNo straw detected. Check HSV settings or YOLO model.")
+
+    log.info(f"=== Done in {time.time()-t0:.2f}s ===")
+    print(f"\nDebug log: {os.path.abspath(LOG_FILE)}")
