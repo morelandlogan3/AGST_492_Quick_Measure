@@ -1,0 +1,201 @@
+# ============================================================
+# train_yolo.py — YOLOv8 Straw Segmentation Training Script
+# ============================================================
+#
+# REQUIREMENTS:
+#   pip install ultralytics roboflow
+#
+# STEPS BEFORE RUNNING:
+#   1. Label images in Roboflow (Instance Segmentation, class = "straw")
+#   2. Export dataset as "YOLOv8" format
+#   3. Paste your Roboflow API key + project details below
+#   4. Run: python train_yolo.py
+#
+# OUTPUT:
+#   runs/segment/straw_model/weights/best.pt  ← copy this path to
+#   YOLO_MODEL_PATH in straw_measure.py
+# ============================================================
+
+import os
+import sys
+
+# ============================================================
+# CONFIGURATION — fill these in from your Roboflow export page
+# ============================================================
+
+ROBOFLOW_API_KEY   = "YOUR_API_KEY_HERE"
+ROBOFLOW_WORKSPACE = "YOUR_WORKSPACE_HERE"
+ROBOFLOW_PROJECT   = "YOUR_PROJECT_NAME_HERE"
+ROBOFLOW_VERSION   = 1                          # dataset version number
+
+# Training settings
+EPOCHS      = 50        # increase to 100+ for better accuracy
+IMAGE_SIZE  = 640       # 640 is standard; use 320 for faster training
+BATCH_SIZE  = 8         # reduce to 4 if you run out of GPU memory
+MODEL_SIZE  = "n"       # n=nano (fast), s=small, m=medium, l=large
+                        # start with "n", upgrade to "s" or "m" once working
+DEVICE      = None      # None = auto-detect GPU, or set "cpu" to force CPU
+
+# Where to save the trained model
+PROJECT_NAME = "straw_model"
+RUN_NAME     = "v1"
+
+# ============================================================
+# STEP 1 — Download dataset from Roboflow
+# ============================================================
+
+def download_dataset():
+    try:
+        from roboflow import Roboflow
+    except ImportError:
+        print("roboflow not installed. Run: pip install roboflow")
+        sys.exit(1)
+
+    print("\n--- Downloading dataset from Roboflow ---")
+    rf      = Roboflow(api_key=ROBOFLOW_API_KEY)
+    project = rf.workspace(ROBOFLOW_WORKSPACE).project(ROBOFLOW_PROJECT)
+    dataset = project.version(ROBOFLOW_VERSION).download("yolov8")
+
+    data_yaml = os.path.join(dataset.location, "data.yaml")
+    print(f"Dataset downloaded to: {dataset.location}")
+    print(f"data.yaml path:        {data_yaml}")
+    return data_yaml
+
+# ============================================================
+# STEP 2 — Train YOLOv8 segmentation model
+# ============================================================
+
+def train(data_yaml):
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        print("ultralytics not installed. Run: pip install ultralytics")
+        sys.exit(1)
+
+    model_name = f"yolov8{MODEL_SIZE}-seg.pt"
+    print(f"\n--- Training {model_name} ---")
+    print(f"  Epochs:     {EPOCHS}")
+    print(f"  Image size: {IMAGE_SIZE}")
+    print(f"  Batch size: {BATCH_SIZE}")
+    print(f"  Device:     {'auto' if DEVICE is None else DEVICE}\n")
+
+    model = YOLO(model_name)  # downloads pretrained weights automatically
+
+    results = model.train(
+        data       = data_yaml,
+        epochs     = EPOCHS,
+        imgsz      = IMAGE_SIZE,
+        batch      = BATCH_SIZE,
+        device     = DEVICE,
+        project    = PROJECT_NAME,
+        name       = RUN_NAME,
+        # Augmentation — helps with varied lighting conditions
+        hsv_h      = 0.015,   # hue shift
+        hsv_s      = 0.7,     # saturation shift
+        hsv_v      = 0.4,     # brightness shift
+        flipud     = 0.5,     # vertical flip (straw can be any orientation)
+        fliplr     = 0.5,     # horizontal flip
+        degrees    = 45.0,    # rotation (straw can be at any angle)
+        translate  = 0.1,
+        scale      = 0.5,
+        mosaic     = 1.0,
+    )
+
+    best_weights = os.path.join(PROJECT_NAME, RUN_NAME, "weights", "best.pt")
+    print(f"\n--- Training complete ---")
+    print(f"Best model saved to: {os.path.abspath(best_weights)}")
+    print(f"\nNext step: in straw_measure.py, set:")
+    print(f'  DETECTION_MODE  = "yolo"')
+    print(f'  YOLO_MODEL_PATH = "{os.path.abspath(best_weights)}"')
+    return best_weights
+
+# ============================================================
+# STEP 3 — Validate model performance
+# ============================================================
+
+def validate(weights_path, data_yaml):
+    from ultralytics import YOLO
+
+    print(f"\n--- Validating model: {weights_path} ---")
+    model   = YOLO(weights_path)
+    metrics = model.val(data=data_yaml, imgsz=IMAGE_SIZE)
+
+    print(f"\n  mAP50        : {metrics.seg.map50:.4f}   (target > 0.75)")
+    print(f"  mAP50-95     : {metrics.seg.map:.4f}    (target > 0.50)")
+    print(f"  Precision    : {metrics.seg.mp:.4f}")
+    print(f"  Recall       : {metrics.seg.mr:.4f}")
+
+    if metrics.seg.map50 < 0.5:
+        print("\n  TIP: mAP50 is low. Try:")
+        print("    - Adding more labeled images (aim for 200+)")
+        print("    - Increasing EPOCHS to 100")
+        print("    - Using a larger model (MODEL_SIZE = 's' or 'm')")
+    elif metrics.seg.map50 < 0.75:
+        print("\n  TIP: Decent accuracy. Can improve with more data or epochs.")
+    else:
+        print("\n  Good accuracy! Model is ready to use.")
+
+# ============================================================
+# STEP 4 — Quick visual test on a single image
+# ============================================================
+
+def test_on_image(weights_path, image_path):
+    import cv2
+    from ultralytics import YOLO
+
+    print(f"\n--- Testing on: {image_path} ---")
+    model   = YOLO(weights_path)
+    results = model(image_path, conf=0.25)[0]
+
+    img = cv2.imread(image_path)
+    img = cv2.resize(img, (800, 600))
+    h, w = img.shape[:2]
+
+    if results.masks is None:
+        print("  No straw detected in test image.")
+    else:
+        print(f"  Detected {len(results.masks.data)} straw piece(s)")
+        for i, (mask_tensor, box) in enumerate(zip(results.masks.data, results.boxes)):
+            conf = float(box.conf[0])
+            m    = mask_tensor.cpu().numpy()
+            m    = (m * 255).astype("uint8")
+            m    = cv2.resize(m, (w, h))
+            img[m > 127] = (
+                img[m > 127] * 0.5 + [0, 180, 255] * 0.5
+            ).astype("uint8")
+            print(f"    Straw {i}: conf={conf:.3f}")
+
+    cv2.imshow("YOLO Test Result", img)
+    out = "yolo_test_result.jpg"
+    cv2.imwrite(out, img)
+    print(f"  Test image saved: {os.path.abspath(out)}")
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+    print("="*60)
+    print("  YOLOv8 Straw Segmentation — Training Pipeline")
+    print("="*60)
+
+    # Check for placeholder API key
+    if ROBOFLOW_API_KEY == "YOUR_API_KEY_HERE":
+        print("\nERROR: Please fill in your Roboflow credentials at the top of this file.")
+        print("  ROBOFLOW_API_KEY   = your key from roboflow.com/settings/api")
+        print("  ROBOFLOW_WORKSPACE = your workspace slug")
+        print("  ROBOFLOW_PROJECT   = your project slug")
+        sys.exit(1)
+
+    # Run pipeline
+    data_yaml     = download_dataset()
+    weights_path  = train(data_yaml)
+    validate(weights_path, data_yaml)
+
+    # Optional: test on a specific image
+    # Uncomment and set a path to visually verify the model:
+    # test_on_image(weights_path, "path/to/your/test_image.jpg")
+
+    print("\nDone! Update straw_measure.py with your model path and set DETECTION_MODE = 'yolo'")
