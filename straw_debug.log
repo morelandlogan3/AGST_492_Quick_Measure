@@ -1,0 +1,15 @@
+2026-04-08 13:18:59,312 [INFO] === Straw Measurement Tool Started ===
+2026-04-08 13:18:59,313 [INFO] Detection mode     : HSV
+2026-04-08 13:18:59,314 [INFO] Calibration mode   : AUTO
+2026-04-08 13:18:59,314 [INFO] Calibration per img: False
+2026-04-08 13:18:59,314 [INFO] Angle tolerance    : 35.0°  |  Cluster radius: 80px
+2026-04-08 13:18:59,316 [INFO] Opening file picker...
+2026-04-08 13:19:04,342 [INFO] Selected 1 file(s)
+2026-04-08 13:19:41,737 [WARNING] YOLO model not found at 'straw_model.pt'. Falling back to HSV.
+2026-04-08 13:19:41,738 [INFO] Opening HSV tuning: C:/Users/Logan/Downloads/IMG_2466.jpg
+2026-04-08 13:20:24,550 [INFO] HSV Lower: [  0   0 134]  Upper: [179 255 255]
+2026-04-08 13:20:24,553 [INFO] 
+Image 1/1: C:/Users/Logan/Downloads/IMG_2466.jpg
+2026-04-08 13:20:24,726 [WARNING]   [IMG_2466.jpg] SKIPPED — no quarter detected and no cached calibration available. Add a US quarter to the image or switch CALIBRATION_MODE to 'manual'.
+2026-04-08 13:20:24,733 [WARNING] No straw detected.
+2026-04-08 13:20:24,734 [INFO] === Done in 85.42s ===
