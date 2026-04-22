@@ -3,30 +3,32 @@
 # ============================================================
 # MODES:
 #   1. HSV Mode   — classic color segmentation (no model needed)
-#   2. YOLO Mode  — YOLOv8 instance segmentation (requires trained model)
+#   2. YOLO Mode  — YOLOv11 instance segmentation (uses best.pt)
+#
+# YOLO INTEGRATION:
+#   This script uses your trained instance segmentation model.
+#   Each straw detection comes with its own pixel-level mask,
+#   which is fed directly into skeletonization and length
+#   measurement. No HSV color segmentation needed per straw.
 #
 # CALIBRATION:
 #   When CALIBRATION_MODE = "auto", the pipeline looks for a YOLO
 #   detection whose class name matches QUARTER_CLASS_NAME.
-#   - Primary method : fit an ellipse to the segmentation mask →
-#                      average of major/minor axes as pixel diameter
-#   - Fallback method: use bounding-box (w+h)/2 as pixel diameter
+#   - Fits an ellipse to the quarter mask if available (most accurate)
+#   - Falls back to bounding-box (w+h)/2 if no mask
 #   A US quarter is 24.26 mm in diameter, so:
 #       pixel_to_mm = QUARTER_DIAMETER_MM / pixel_diameter
 #
-#   CALIBRATION_PER_IMAGE = True  → recalibrate from each image
-#   CALIBRATION_PER_IMAGE = False → calibrate once from first image
-#                                   that contains a quarter; reuse for rest
-#
-#   If no quarter is found in an image when calibration is required,
-#   the image is skipped with a warning.
+#   CALIBRATION_PER_IMAGE = True  -> recalibrate from each image
+#   CALIBRATION_PER_IMAGE = False -> calibrate once from first image
+#                                    that contains a quarter; reuse for rest
 #
 # OVERLAP SEPARATION:
 #   When straws cross, their skeletons merge at a branch point,
 #   producing 4+ endpoints instead of 2. This script:
 #     1. Finds all skeleton endpoints in an overlap region
-#     2. Computes the angle each endpoint "points away" from the crossing
-#     3. Clusters endpoints that are angularly opposite (~180° apart)
+#     2. Computes the angle each endpoint points away from the crossing
+#     3. Clusters endpoints that are angularly opposite (~180 apart)
 #        and within a spatial proximity radius
 #     4. Pairs them as belonging to the same straw piece
 #     5. Traces the Dijkstra path between each valid pair
@@ -51,33 +53,33 @@ from itertools import combinations
 # CONFIGURATION
 # ============================================================
 
-DETECTION_MODE   = "hsv"            # "hsv" or "yolo"
-YOLO_MODEL_PATH  = "straw_model.pt" # Path to trained YOLOv8 model
-YOLO_CONF        = 0.25             # YOLO confidence threshold
+DETECTION_MODE   = "yolo"           # "hsv" or "yolo"
+YOLO_MODEL_PATH  = "best.pt"        # Path to your trained instance seg model
+YOLO_CONF        = 0.5              # YOLO confidence threshold
 
 # --- Calibration ---
-# "auto"   → detect a quarter in the image to set pixel_to_mm
-# "manual" → always prompt the user
-CALIBRATION_MODE       = "auto"
-
-# When True  → re-detect the quarter and recalibrate for every image.
-# When False → calibrate once from the first image that has a quarter,
-#              then reuse that ratio for all subsequent images.
-CALIBRATION_PER_IMAGE  = False
-
-QUARTER_CLASS_NAME     = "quarter"   # Must match the YOLO class label exactly
-QUARTER_DIAMETER_MM    = 24.26       # US quarter diameter in millimetres
+CALIBRATION_MODE       = "auto"     # "auto" or "manual"
+CALIBRATION_PER_IMAGE  = False      # True = recalibrate each image
+QUARTER_CLASS_NAME     = "quarter"  # Must match your YOLO class label exactly
+QUARTER_DIAMETER_MM    = 24.26      # US quarter diameter in millimetres
 
 PIXEL_TO_MM      = 0.1              # Fallback / manual default (mm per pixel)
 MIN_CONTOUR_AREA = 100              # Minimum contour area in pixels
-CURVE_THRESHOLD  = 1.1              # path/euclidean ratio → "Curved"
+CURVE_THRESHOLD  = 1.1              # path/euclidean ratio -> "Curved"
 DEBUG_MODE       = True             # Show debug windows
 LOG_FILE         = "straw_debug.log"
 
 # --- Debugger file bypass ---
+# Add full paths here to skip the file picker during testing
 DEBUG_FILES = [
     # r"C:\Users\Logan\Downloads\IMG_2466.jpg",
 ]
+
+# --- HSV range for straw color ---
+# Only used in HSV mode or as fallback if YOLO returns no masks.
+# Run with DETECTION_MODE = "hsv" first to fine-tune these values.
+STRAW_HSV_LOWER = np.array([10,  40,  80])
+STRAW_HSV_UPPER = np.array([35, 255, 255])
 
 # --- Endpoint clustering parameters ---
 ANGLE_TOLERANCE_DEG  = 35.0
@@ -98,6 +100,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+
 def debug_step(name, image, wait=200):
     if DEBUG_MODE and image is not None:
         cv2.imshow(f"DEBUG: {name}", image)
@@ -115,9 +118,10 @@ def load_yolo_model(model_path):
             return None
         model = YOLO(model_path)
         log.info(f"YOLO model loaded: {model_path}")
+        log.info(f"  Classes: {model.names}")
         return model
     except ImportError:
-        log.warning("ultralytics not installed (pip install ultralytics). Falling back to HSV.")
+        log.warning("ultralytics not installed. Run: pip install ultralytics")
         return None
     except Exception as e:
         log.warning(f"YOLO load failed: {e}. Falling back to HSV.")
@@ -132,7 +136,7 @@ def select_files():
         valid   = [f for f in DEBUG_FILES if os.path.exists(f)]
         missing = [f for f in DEBUG_FILES if not os.path.exists(f)]
         for m in missing:
-            log.warning(f"DEBUG_FILES: file not found — {m}")
+            log.warning(f"DEBUG_FILES: file not found -- {m}")
         log.info(f"DEBUG_FILES mode: using {len(valid)} file(s)")
         return valid
 
@@ -153,73 +157,64 @@ def select_files():
     return files
 
 # ============================================================
-# CALIBRATION — QUARTER DETECTION
+# CALIBRATION -- QUARTER DETECTION
 # ============================================================
 
 def calibrate_from_quarter(image, yolo_model):
     """
-    Run YOLO on `image` and look for a detection whose class name matches
-    QUARTER_CLASS_NAME.
+    Run YOLO on the image and find a quarter detection.
 
     Size estimation priority:
-      1. Ellipse fit to segmentation mask  (most accurate — handles tilt/angle)
-      2. Bounding-box average (w+h)/2      (fallback when mask unavailable)
+      1. Ellipse fit to segmentation mask  (most accurate)
+      2. Bounding-box average (w+h)/2      (fallback)
 
-    Returns (pixel_to_mm, method_string) on success, or (None, reason) on failure.
+    Returns (pixel_to_mm, method_string) on success,
+            (None, reason_string) on failure.
     """
     if yolo_model is None:
         return None, "no YOLO model loaded"
 
-    results = yolo_model(image, conf=YOLO_CONF, verbose=False)[0]
-    names   = yolo_model.names                          # {int: str}
-
-    h_img, w_img = image.shape[:2]
-
+    h_img, w_img       = image.shape[:2]
+    results            = yolo_model(image, conf=YOLO_CONF, verbose=False)[0]
+    names              = yolo_model.names
     quarter_detections = []
+
     for idx, box in enumerate(results.boxes):
         cls_id   = int(box.cls[0])
         cls_name = names.get(cls_id, "").lower().strip()
         if cls_name != QUARTER_CLASS_NAME.lower().strip():
             continue
 
-        conf     = float(box.conf[0])
+        conf            = float(box.conf[0])
         x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+        pixel_diameter  = None
+        method          = None
 
-        # --- Method 1: ellipse on segmentation mask ---
-        pixel_diameter = None
-        method         = None
-
+        # Method 1: ellipse on segmentation mask
         if results.masks is not None and idx < len(results.masks.data):
             mask_raw = results.masks.data[idx].cpu().numpy()
             mask_u8  = (mask_raw * 255).astype(np.uint8)
             mask_u8  = cv2.resize(mask_u8, (w_img, h_img),
                                   interpolation=cv2.INTER_NEAREST)
             _, mask_bin = cv2.threshold(mask_u8, 127, 255, cv2.THRESH_BINARY)
-
             contours, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL,
                                            cv2.CHAIN_APPROX_SIMPLE)
             if contours:
                 largest = max(contours, key=cv2.contourArea)
-                if len(largest) >= 5:          # fitEllipse needs ≥ 5 points
+                if len(largest) >= 5:
                     try:
-                        ellipse = cv2.fitEllipse(largest)
-                        # ellipse = (centre, (MA, ma), angle)
-                        major_axis = max(ellipse[1])
-                        minor_axis = min(ellipse[1])
+                        ellipse        = cv2.fitEllipse(largest)
+                        major_axis     = max(ellipse[1])
+                        minor_axis     = min(ellipse[1])
                         pixel_diameter = (major_axis + minor_axis) / 2.0
-                        method = "ellipse"
-                        log.info(
-                            f"  Quarter ellipse axes: "
-                            f"major={major_axis:.1f}px  minor={minor_axis:.1f}px  "
-                            f"avg={pixel_diameter:.1f}px"
-                        )
-
-                        # Draw ellipse on debug overlay
+                        method         = "ellipse"
+                        log.info(f"  Quarter ellipse: major={major_axis:.1f}px "
+                                 f"minor={minor_axis:.1f}px avg={pixel_diameter:.1f}px")
                         if DEBUG_MODE:
                             dbg = image.copy()
                             cv2.ellipse(dbg, ellipse, (0, 255, 0), 2)
                             cv2.putText(dbg,
-                                        f"Quarter ellipse  d={pixel_diameter:.1f}px",
+                                        f"Quarter ellipse d={pixel_diameter:.1f}px",
                                         (x1, max(y1 - 10, 20)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                                         (0, 255, 0), 2, cv2.LINE_AA)
@@ -227,22 +222,18 @@ def calibrate_from_quarter(image, yolo_model):
                     except cv2.error as e:
                         log.warning(f"  fitEllipse failed: {e}")
 
-        # --- Method 2: bounding-box fallback ---
+        # Method 2: bounding box fallback
         if pixel_diameter is None:
-            bw = x2 - x1
-            bh = y2 - y1
+            bw             = x2 - x1
+            bh             = y2 - y1
             pixel_diameter = (bw + bh) / 2.0
-            method = "bbox_fallback"
-            log.info(
-                f"  Quarter bbox fallback: w={bw}px  h={bh}px  "
-                f"avg={pixel_diameter:.1f}px"
-            )
-
+            method         = "bbox_fallback"
+            log.info(f"  Quarter bbox: w={bw}px h={bh}px avg={pixel_diameter:.1f}px")
             if DEBUG_MODE:
                 dbg = image.copy()
                 cv2.rectangle(dbg, (x1, y1), (x2, y2), (0, 200, 255), 2)
                 cv2.putText(dbg,
-                            f"Quarter bbox  d={pixel_diameter:.1f}px",
+                            f"Quarter bbox d={pixel_diameter:.1f}px",
                             (x1, max(y1 - 10, 20)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                             (0, 200, 255), 2, cv2.LINE_AA)
@@ -258,80 +249,41 @@ def calibrate_from_quarter(image, yolo_model):
     if not quarter_detections:
         return None, "no quarter detected in image"
 
-    # If multiple quarters somehow detected, use the highest-confidence one
-    best = max(quarter_detections, key=lambda d: d["conf"])
+    best  = max(quarter_detections, key=lambda d: d["conf"])
     px2mm = QUARTER_DIAMETER_MM / best["pixel_diameter"]
-
-    log.info(
-        f"  Calibration: {QUARTER_DIAMETER_MM}mm / "
-        f"{best['pixel_diameter']:.2f}px = {px2mm:.5f} mm/px  "
-        f"[method={best['method']}  conf={best['conf']:.2f}]"
-    )
+    log.info(f"  Calibration: {QUARTER_DIAMETER_MM}mm / "
+             f"{best['pixel_diameter']:.2f}px = {px2mm:.5f} mm/px "
+             f"[method={best['method']} conf={best['conf']:.2f}]")
     return px2mm, best["method"]
 
 
-def get_calibration_for_image(image, image_path, yolo_model,
-                               cached_ratio):
-    """
-    Determine pixel_to_mm for a single image according to config flags.
-
-    Args:
-        image        : the cv2 image array (already loaded & resized)
-        image_path   : path string (used in log messages)
-        yolo_model   : loaded YOLO model (may be None)
-        cached_ratio : previously computed ratio from an earlier image,
-                       or None if this is the first image / per-image mode
-
-    Returns:
-        (pixel_to_mm, updated_cached_ratio)
-        pixel_to_mm        = None means "skip this image"
-        updated_cached_ratio = the ratio to carry forward for future images
-    """
+def get_calibration_for_image(image, image_path, yolo_model, cached_ratio):
     fname = os.path.basename(image_path)
 
-    # ----- MANUAL mode: always prompt -----
     if CALIBRATION_MODE == "manual":
         ratio = get_calibration_manual()
-        return ratio, cached_ratio   # manual doesn't update the cache
+        return ratio, cached_ratio
 
-    # ----- AUTO mode -----
-    # If per-image=False and we already have a cached ratio, reuse it
     if not CALIBRATION_PER_IMAGE and cached_ratio is not None:
-        log.info(f"  [{fname}] Reusing cached calibration: "
-                 f"{cached_ratio:.5f} mm/px")
+        log.info(f"  [{fname}] Reusing cached calibration: {cached_ratio:.5f} mm/px")
         return cached_ratio, cached_ratio
 
-    # Attempt to calibrate from this image
     ratio, info = calibrate_from_quarter(image, yolo_model)
 
     if ratio is None:
-        # No quarter found
         if cached_ratio is not None and not CALIBRATION_PER_IMAGE:
-            # Shouldn't normally reach here (handled above), but safe fallback
-            log.warning(f"  [{fname}] No quarter found — reusing cached ratio.")
+            log.warning(f"  [{fname}] No quarter found -- reusing cached ratio.")
             return cached_ratio, cached_ratio
+        log.warning(f"  [{fname}] SKIPPED -- no quarter detected and no cached calibration.")
+        print(f"\n  WARNING: '{fname}' skipped -- no quarter found for calibration.\n"
+              f"     (Set CALIBRATION_MODE='manual' or include a quarter in every image)\n")
+        return None, cached_ratio
 
-        # Skip this image
-        log.warning(
-            f"  [{fname}] SKIPPED — no quarter detected and no cached "
-            f"calibration available. Add a US quarter to the image or "
-            f"switch CALIBRATION_MODE to 'manual'."
-        )
-        print(
-            f"\n  ⚠  WARNING: '{fname}' skipped — no quarter found for "
-            f"calibration.\n"
-            f"     (Set CALIBRATION_MODE='manual' or include a quarter "
-            f"in every image when CALIBRATION_PER_IMAGE=True)\n"
-        )
-        return None, cached_ratio   # None signals caller to skip image
-
-    log.info(f"  [{fname}] Auto-calibration OK: "
-             f"{ratio:.5f} mm/px  [{info}]")
-    return ratio, ratio             # update cache with new ratio
+    log.info(f"  [{fname}] Auto-calibration OK: {ratio:.5f} mm/px [{info}]")
+    return ratio, ratio
 
 
 def get_calibration_manual():
-    """Prompt the user for a pixel-to-mm ratio."""
     print("\n--- CALIBRATION ---")
     print(f"Default pixel-to-mm ratio: {PIXEL_TO_MM}")
     user_input = input("Enter mm per pixel or press Enter for default: ").strip()
@@ -350,7 +302,6 @@ def get_calibration_manual():
 # ============================================================
 
 def get_hsv(sample_path):
-    """Real-time HSV tuning with callback-driven instant updates."""
     log.info(f"Opening HSV tuning: {sample_path}")
     img = cv2.imread(sample_path)
     if img is None:
@@ -376,13 +327,15 @@ def get_hsv(sample_path):
         top   = np.hstack([img, ov])
         bot   = np.hstack([bl,  mb])
         for panel, label, pos in [
-            (top, "Original",        (10, 25)), (top, "Masked Overlay",  (810, 25)),
-            (bot, "Green Highlight", (10, 25)), (bot, "Binary Mask",     (810, 25)),
+            (top, "Original",        (10, 25)),
+            (top, "Masked Overlay",  (810, 25)),
+            (bot, "Green Highlight", (10, 25)),
+            (bot, "Binary Mask",     (810, 25)),
         ]:
             cv2.putText(panel, label, pos, cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7, (255,255,255), 2, cv2.LINE_AA)
+                        0.7, (255, 255, 255), 2, cv2.LINE_AA)
             cv2.putText(panel, label, pos, cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7, (0,0,0),       1, cv2.LINE_AA)
+                        0.7, (0, 0, 0), 1, cv2.LINE_AA)
         cv2.imshow(WIN, cv2.resize(np.vstack([top, bot]), (800, 600)))
         px = int(np.sum(mask > 0))
         print(f"\r  HSV [{state['H Min']:3d}-{state['H Max']:3d}]"
@@ -395,31 +348,33 @@ def get_hsv(sample_path):
         return cb
 
     for name, maxv, default in [
-        ("H Min",179,0),("H Max",179,179),("S Min",255,0),
-        ("S Max",255,255),("V Min",255,0),("V Max",255,255)
+        ("H Min", 179, 0), ("H Max", 179, 179),
+        ("S Min", 255, 0), ("S Max", 255, 255),
+        ("V Min", 255, 0), ("V Max", 255, 255),
     ]:
         cv2.createTrackbar(name, WIN, default, maxv, make_cb(name))
 
-    print("\n--- HSV TUNING ---\nMove sliders — updates instantly. Q to confirm.\n")
+    print("\n--- HSV TUNING ---\nMove sliders -- updates instantly. Q to confirm.\n")
     update()
     while True:
         if cv2.waitKey(50) & 0xFF in (ord('q'), ord('s'), 27):
             break
-    cv2.destroyAllWindows(); print()
+    cv2.destroyAllWindows()
+    print()
     lower = np.array([state["H Min"], state["S Min"], state["V Min"]])
     upper = np.array([state["H Max"], state["S Max"], state["V Max"]])
     log.info(f"HSV Lower: {lower}  Upper: {upper}")
     return lower, upper
 
 # ============================================================
-# MASK EXTRACTION — HSV
+# MASK EXTRACTION -- HSV (whole image, no YOLO)
 # ============================================================
 
 def get_masks_hsv(image, hsv_lower, hsv_upper):
-    hsv  = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, hsv_lower, hsv_upper)
+    hsv    = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask   = cv2.inRange(hsv, hsv_lower, hsv_upper)
     debug_step("HSV Raw Mask", mask)
-    kernel = np.ones((3,3), np.uint8)
+    kernel = np.ones((3, 3), np.uint8)
     mask   = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
     mask   = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     debug_step("HSV After Morphology", mask)
@@ -429,8 +384,9 @@ def get_masks_hsv(image, hsv_lower, hsv_upper):
     unk    = cv2.subtract(mask, sfg)
     mrk, n = ndi.label(sfg)
     log.debug(f"HSV watershed markers: {n}")
-    mrk    = mrk + 1; mrk[unk == 255] = 0
-    mrk    = cv2.watershed(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR), mrk)
+    mrk             = mrk + 1
+    mrk[unk == 255] = 0
+    mrk             = cv2.watershed(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR), mrk)
     mask[mrk == -1] = 0
     debug_step("HSV After Watershed", mask)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
@@ -447,47 +403,91 @@ def get_masks_hsv(image, hsv_lower, hsv_upper):
     return masks
 
 # ============================================================
-# MASK EXTRACTION — YOLO
+# MASK EXTRACTION -- YOLO INSTANCE SEGMENTATION
 # ============================================================
 
 def get_masks_yolo(image, model, conf_threshold):
     """
-    Return straw masks only — quarter detections are excluded here
-    (they are consumed separately by the calibration step).
+    Uses YOLO instance segmentation masks directly.
+    Each straw detection returns its own pixel-level mask.
+    Quarter detections are skipped -- used only for calibration.
+
+    Falls back to bounding-box filled mask if the model returns
+    no mask data (e.g. detection-only model loaded by mistake).
     """
-    h, w    = image.shape[:2]
-    results = model(image, conf=conf_threshold, verbose=False)[0]
-    names   = model.names
-    masks   = []
+    h_img, w_img = image.shape[:2]
+    results      = model(image, conf=conf_threshold, verbose=False)[0]
+    names        = model.names
+    masks        = []
+    has_masks    = results.masks is not None
 
-    if results.masks is None:
-        log.warning("YOLO: no masks returned.")
-        return masks
+    if not has_masks:
+        log.warning("YOLO returned no segmentation masks. "
+                    "Ensure best.pt is the instance segmentation model. "
+                    "Falling back to filled bounding boxes.")
 
-    log.info(f"YOLO detections: {len(results.masks.data)}")
-    for idx, (mt, box) in enumerate(zip(results.masks.data, results.boxes)):
+    for idx, box in enumerate(results.boxes):
         cls_id   = int(box.cls[0])
         cls_name = names.get(cls_id, "").lower().strip()
 
-        # Skip the quarter — it's a calibration target, not a straw
+        # Skip quarter -- calibration only
         if cls_name == QUARTER_CLASS_NAME.lower().strip():
-            log.debug(f"  YOLO: skipping quarter detection (idx={idx})")
+            log.debug(f"  Skipping quarter detection (idx={idx})")
             continue
 
-        conf = float(box.conf[0])
-        m    = mt.cpu().numpy()
-        m    = (m * 255).astype(np.uint8)
-        m    = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
-        _, m = cv2.threshold(m, 127, 255, cv2.THRESH_BINARY)
-        if np.sum(m > 0) < MIN_CONTOUR_AREA:
+        conf            = float(box.conf[0])
+        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+        x1 = max(0, x1); y1 = max(0, y1)
+        x2 = min(w_img, x2); y2 = min(h_img, y2)
+
+        full_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+
+        # Primary: use instance segmentation mask
+        if has_masks and idx < len(results.masks.data):
+            mask_raw = results.masks.data[idx].cpu().numpy()
+            mask_u8  = (mask_raw * 255).astype(np.uint8)
+            mask_u8  = cv2.resize(mask_u8, (w_img, h_img),
+                                  interpolation=cv2.INTER_NEAREST)
+            _, mask_bin = cv2.threshold(mask_u8, 127, 255, cv2.THRESH_BINARY)
+            kernel      = np.ones((3, 3), np.uint8)
+            mask_bin    = cv2.morphologyEx(mask_bin, cv2.MORPH_CLOSE, kernel)
+            full_mask   = mask_bin
+
+        # Fallback: fill the bounding box
+        else:
+            if (x2 - x1) >= 5 and (y2 - y1) >= 5:
+                full_mask[y1:y2, x1:x2] = 255
+                log.debug(f"  Using bbox fill fallback for idx={idx}")
+
+        if np.sum(full_mask > 0) < MIN_CONTOUR_AREA:
+            log.debug(f"  Mask idx={idx} too small, skipping.")
             continue
-        masks.append({"mask": m, "confidence": conf, "source": "yolo"})
+
+        masks.append({
+            "mask":       full_mask,
+            "confidence": conf,
+            "source":     "yolo",
+            "class":      cls_name,
+            "bbox":       (x1, y1, x2, y2),
+        })
+        log.debug(f"  Straw idx={idx} class={cls_name} conf={conf:.2f} "
+                  f"mask_px={int(np.sum(full_mask > 0))}")
+
+    log.info(f"YOLO instance masks returned: {len(masks)}")
 
     if DEBUG_MODE and masks:
-        combined = np.zeros((h, w), np.uint8)
+        combined = np.zeros((h_img, w_img), np.uint8)
         for e in masks:
             combined = cv2.bitwise_or(combined, e["mask"])
-        debug_step("YOLO Combined Masks", combined)
+        dbg = image.copy()
+        for e in masks:
+            x1, y1, x2, y2 = e["bbox"]
+            cv2.rectangle(dbg, (x1, y1), (x2, y2), (0, 255, 100), 1)
+            cv2.putText(dbg, f"{e['class']} {e['confidence']:.2f}",
+                        (x1, max(y1 - 6, 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 100), 1)
+        debug_step("YOLO Detections + Boxes", dbg)
+        debug_step("YOLO Combined Instance Masks", combined)
 
     return masks
 
@@ -501,13 +501,15 @@ def dijkstra(graph, start, end):
     dist[start] = 0
     while queue:
         d, cur = heapq.heappop(queue)
-        if cur == end: return d
+        if cur == end:
+            return d
         for nb in graph[cur]:
             nd = d + np.linalg.norm(np.array(cur) - np.array(nb))
             if nd < dist[nb]:
                 dist[nb] = nd
                 heapq.heappush(queue, (nd, nb))
     return float('inf')
+
 
 def dijkstra_path(graph, start, end):
     """Returns (distance, [list of nodes on path])."""
@@ -516,7 +518,8 @@ def dijkstra_path(graph, start, end):
     dist[start] = 0
     while queue:
         d, cur, path = heapq.heappop(queue)
-        if cur == end: return d, path
+        if cur == end:
+            return d, path
         for nb in graph[cur]:
             nd = d + np.linalg.norm(np.array(cur) - np.array(nb))
             if nd < dist[nb]:
@@ -532,7 +535,7 @@ def build_graph(points):
     pts   = np.array(points)
     graph = {}
     for p in pts:
-        tp = tuple(p)
+        tp        = tuple(p)
         graph[tp] = [
             tuple(q) for q in pts
             if 0 < np.linalg.norm(p - q) <= np.sqrt(2)
@@ -544,8 +547,8 @@ def build_graph(points):
 # ============================================================
 
 def classify_skeleton_points(points):
-    point_set = set(map(tuple, points))
-    dirs = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+    point_set             = set(map(tuple, points))
+    dirs                  = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
     endpoints, body, branches = [], [], []
     for p in points:
         n  = sum(1 for d in dirs if (p[0]+d[0], p[1]+d[1]) in point_set)
@@ -553,7 +556,7 @@ def classify_skeleton_points(points):
         if   n == 1: endpoints.append(tp)
         elif n >= 3: branches.append(tp)
         else:        body.append(tp)
-    log.debug(f"  Skeleton — endpoints: {len(endpoints)}  "
+    log.debug(f"  Skeleton -- endpoints: {len(endpoints)}  "
               f"branch pts: {len(branches)}  body: {len(body)}")
     return endpoints, body, branches
 
@@ -596,7 +599,7 @@ def cluster_and_pair_endpoints(endpoints, branch_points, graph):
         if dist <= CLUSTER_RADIUS_PX:
             angle = endpoint_exit_angle(ep, graph)
             nearby.append({"ep": ep, "dist": dist, "angle": angle})
-            log.debug(f"    EP {ep}  dist={dist:.1f}px  angle={angle:.1f}°")
+            log.debug(f"    EP {ep}  dist={dist:.1f}px  angle={angle:.1f}")
 
     if len(nearby) < 2:
         log.debug("  Not enough nearby endpoints to pair.")
@@ -609,8 +612,6 @@ def cluster_and_pair_endpoints(endpoints, branch_points, graph):
         deviation  = abs(angle_diff - 180.0)
         if deviation <= ANGLE_TOLERANCE_DEG:
             scored_pairs.append((deviation, a["ep"], b["ep"]))
-            log.debug(f"  Candidate pair {a['ep']} ↔ {b['ep']}  "
-                      f"angle_diff={angle_diff:.1f}°  deviation={deviation:.1f}°")
 
     if not scored_pairs:
         log.debug("  No angularly compatible endpoint pairs found.")
@@ -624,9 +625,8 @@ def cluster_and_pair_endpoints(endpoints, branch_points, graph):
             pairs.append((ep_a, ep_b))
             used.add(ep_a)
             used.add(ep_b)
-            log.debug(f"  ✓ Accepted pair {ep_a} ↔ {ep_b}  deviation={deviation:.1f}°")
 
-    log.info(f"  Endpoint pairing: {len(nearby)} nearby → {len(pairs)} pair(s)")
+    log.info(f"  Endpoint pairing: {len(nearby)} nearby -> {len(pairs)} pair(s)")
     return pairs
 
 # ============================================================
@@ -640,7 +640,7 @@ def draw_endpoint_debug(overlay, endpoints, branch_points, pairs, centroid=None)
         cv2.circle(overlay, (ep[1], ep[0]), 5, (0, 220, 220), 1)
     if centroid is not None:
         cx, cy = int(centroid[1]), int(centroid[0])
-        cv2.drawMarker(overlay, (cx, cy), (255,255,255),
+        cv2.drawMarker(overlay, (cx, cy), (255, 255, 255),
                        cv2.MARKER_CROSS, 12, 2)
     colors = [(255,0,255),(255,128,0),(0,255,128),(128,0,255),(255,255,0)]
     for idx, (ep_a, ep_b) in enumerate(pairs):
@@ -659,7 +659,7 @@ def measure_straw_pair(ep_a, ep_b, graph, all_points, straw_id,
     path_len, path_nodes = dijkstra_path(graph, ep_a, ep_b)
 
     if path_len == float('inf') or path_len < MIN_PATH_LENGTH_PX:
-        log.debug(f"  Pair {ep_a}↔{ep_b}: path={path_len:.1f}px — too short or disconnected.")
+        log.debug(f"  Pair {ep_a}<->{ep_b}: path={path_len:.1f}px -- too short/disconnected.")
         return None
 
     euclid = np.linalg.norm(np.array(ep_a) - np.array(ep_b))
@@ -689,13 +689,13 @@ def measure_straw_pair(ep_a, ep_b, graph, all_points, straw_id,
     cv2.circle(overlay, (ep_a[1], ep_a[0]), 5, ep_color, -1)
     cv2.circle(overlay, (ep_b[1], ep_b[0]), 5, ep_color, -1)
 
-    cx = int((ep_a[1] + ep_b[1]) / 2)
-    cy = int((ep_a[0] + ep_b[0]) / 2) - 8
+    cx  = int((ep_a[1] + ep_b[1]) / 2)
+    cy  = int((ep_a[0] + ep_b[0]) / 2) - 8
     tag = "R" if is_reconstructed else ""
     cv2.putText(overlay,
                 f"#{straw_id}{tag} {length_mm:.1f}mm [{confidence}]",
                 (cx, cy), cv2.FONT_HERSHEY_SIMPLEX,
-                0.38, (255,255,255), 1, cv2.LINE_AA)
+                0.38, (255, 255, 255), 1, cv2.LINE_AA)
 
     return {
         "Straw_ID":             straw_id,
@@ -729,20 +729,18 @@ def measure_mask(mask_entry, base_straw_id, pixel_to_mm, overlay):
         log.warning(f"  Mask {base_straw_id}: skeleton too short, skipping.")
         return []
 
-    points = np.column_stack(np.where(skeleton > 0))
+    points                          = np.column_stack(np.where(skeleton > 0))
     endpoints, body_pts, branch_pts = classify_skeleton_points(points)
-    graph   = build_graph(points)
-    results = []
+    graph                           = build_graph(points)
+    results                         = []
 
-    # CASE B: Overlap
+    # CASE B: Overlap detected
     if branch_pts and len(endpoints) >= 2:
         log.info(f"  Mask {base_straw_id}: overlap detected "
                  f"({len(branch_pts)} branch pts, {len(endpoints)} endpoints)")
 
-        pairs = cluster_and_pair_endpoints(endpoints, branch_pts, graph)
-
-        centroid = (np.array(branch_pts).mean(axis=0)
-                    if branch_pts else None)
+        pairs    = cluster_and_pair_endpoints(endpoints, branch_pts, graph)
+        centroid = (np.array(branch_pts).mean(axis=0) if branch_pts else None)
         draw_endpoint_debug(overlay, endpoints, branch_pts, pairs, centroid)
 
         if pairs:
@@ -758,25 +756,25 @@ def measure_mask(mask_entry, base_straw_id, pixel_to_mm, overlay):
             if results:
                 return results
 
-        log.warning(f"  Mask {base_straw_id}: pairing failed — falling back.")
+        log.warning(f"  Mask {base_straw_id}: pairing failed -- falling back.")
 
     # CASE A: No overlap / fallback
     if len(endpoints) >= 2:
-        pts = np.array(endpoints)
-        dm  = cdist(pts, pts)
-        idx = np.unravel_index(np.argmax(dm), dm.shape)
-        ep_a = tuple(pts[idx[0]])
-        ep_b = tuple(pts[idx[1]])
+        pts       = np.array(endpoints)
+        dm        = cdist(pts, pts)
+        idx       = np.unravel_index(np.argmax(dm), dm.shape)
+        ep_a      = tuple(pts[idx[0]])
+        ep_b      = tuple(pts[idx[1]])
         ep_method = "true_endpoint"
     else:
-        pts = np.array(list(map(list, [tuple(p) for p in points])))
-        dm  = cdist(pts, pts)
-        idx = np.unravel_index(np.argmax(dm), dm.shape)
-        ep_a = tuple(pts[idx[0]])
-        ep_b = tuple(pts[idx[1]])
+        pts       = np.array(list(map(list, [tuple(p) for p in points])))
+        dm        = cdist(pts, pts)
+        idx       = np.unravel_index(np.argmax(dm), dm.shape)
+        ep_a      = tuple(pts[idx[0]])
+        ep_b      = tuple(pts[idx[1]])
         ep_method = "fallback_max_dist"
 
-    log.debug(f"  Simple measurement: {ep_a} → {ep_b} ({ep_method})")
+    log.debug(f"  Simple measurement: {ep_a} -> {ep_b} ({ep_method})")
     res = measure_straw_pair(
         ep_a, ep_b, graph, points, base_straw_id,
         pixel_to_mm, overlay, source, yolo_conf,
@@ -809,10 +807,22 @@ def process_image(image_path, pixel_to_mm, mode,
 
     if mode == "yolo" and yolo_model is not None:
         mask_entries = get_masks_yolo(image, yolo_model, YOLO_CONF)
+        # If YOLO found nothing fall back to HSV on the full image
+        if len(mask_entries) == 0:
+            log.warning("YOLO returned 0 straw detections -- falling back to HSV.")
+            mask_entries = get_masks_hsv(
+                image,
+                hsv_lower if hsv_lower is not None else STRAW_HSV_LOWER,
+                hsv_upper if hsv_upper is not None else STRAW_HSV_UPPER
+            )
     else:
         if mode == "yolo":
-            log.warning("YOLO unavailable — falling back to HSV.")
-        mask_entries = get_masks_hsv(image, hsv_lower, hsv_upper)
+            log.warning("YOLO model unavailable -- falling back to HSV.")
+        mask_entries = get_masks_hsv(
+            image,
+            hsv_lower if hsv_lower is not None else STRAW_HSV_LOWER,
+            hsv_upper if hsv_upper is not None else STRAW_HSV_UPPER
+        )
 
     log.info(f"Masks to process: {len(mask_entries)}")
 
@@ -821,15 +831,14 @@ def process_image(image_path, pixel_to_mm, mode,
         log.debug(f"\n  === Mask {i} ===")
         results = measure_mask(entry, i, pixel_to_mm, overlay)
         for res in results:
-            res["Image"]        = os.path.basename(image_path)
-            res["Pixel_to_mm"]  = round(pixel_to_mm, 6)
+            res["Image"]       = os.path.basename(image_path)
+            res["Pixel_to_mm"] = round(pixel_to_mm, 6)
             all_results.append(res)
 
     log.info(f"Image done: {len(all_results)} straw(s) measured "
              f"from {len(mask_entries)} mask(s).")
 
-    # Stamp calibration info onto overlay
-    calib_label = (f"px→mm: {pixel_to_mm:.5f}  "
+    calib_label = (f"px->mm: {pixel_to_mm:.5f}  "
                    f"({'auto' if CALIBRATION_MODE == 'auto' else 'manual'})")
     cv2.putText(overlay,
                 f"Mode: {mode.upper()}  |  Straws: {len(all_results)}  "
@@ -848,11 +857,13 @@ def print_summary(df):
     print("\n" + "="*60)
     print("BATCH SUMMARY")
     print("="*60)
-    print(f"Total straw measured    :  {len(df)}")
+    print(f"Total straws measured   :  {len(df)}")
     if len(df) > 0:
         print(f"Average length (mm)     :  {df['Length_mm'].mean():.2f}")
-        print(f"Min / Max (mm)          :  {df['Length_mm'].min():.2f} / {df['Length_mm'].max():.2f}")
-        print(f"Straight / Curved       :  {(df['Shape']=='Straight').sum()} / {(df['Shape']=='Curved').sum()}")
+        print(f"Min / Max (mm)          :  "
+              f"{df['Length_mm'].min():.2f} / {df['Length_mm'].max():.2f}")
+        print(f"Straight / Curved       :  "
+              f"{(df['Shape']=='Straight').sum()} / {(df['Shape']=='Curved').sum()}")
         print(f"Overlap detected        :  {df['Overlap_Detected'].sum()}")
         if "Reconstructed" in df.columns:
             print(f"Reconstructed (crossed) :  {df['Reconstructed'].sum()}")
@@ -885,10 +896,10 @@ def safe_save_excel(df, filename):
         df.to_excel(base_path, index=False)
         return base_path
     except PermissionError:
-        ts       = time.strftime("%Y%m%d_%H%M%S")
-        name,ext = os.path.splitext(base_path)
-        new_path = f"{name}_{ts}{ext}"
-        log.warning(f"'{base_path}' locked — saving to '{new_path}'")
+        ts        = time.strftime("%Y%m%d_%H%M%S")
+        name, ext = os.path.splitext(base_path)
+        new_path  = f"{name}_{ts}{ext}"
+        log.warning(f"'{base_path}' locked -- saving to '{new_path}'")
         print(f"\n  WARNING: File open in Excel. Saving to {os.path.basename(new_path)}\n")
         df.to_excel(new_path, index=False)
         return new_path
@@ -903,7 +914,8 @@ if __name__ == "__main__":
     log.info(f"Detection mode     : {DETECTION_MODE.upper()}")
     log.info(f"Calibration mode   : {CALIBRATION_MODE.upper()}")
     log.info(f"Calibration per img: {CALIBRATION_PER_IMAGE}")
-    log.info(f"Angle tolerance    : {ANGLE_TOLERANCE_DEG}°  |  "
+    log.info(f"YOLO model path    : {YOLO_MODEL_PATH}")
+    log.info(f"Angle tolerance    : {ANGLE_TOLERANCE_DEG}  |  "
              f"Cluster radius: {CLUSTER_RADIUS_PX}px")
 
     files = select_files()
@@ -918,33 +930,30 @@ if __name__ == "__main__":
     if mode == "yolo":
         yolo_model = load_yolo_model(YOLO_MODEL_PATH)
         if yolo_model is None:
+            log.warning("Falling back to HSV mode.")
             mode = "hsv"
 
-    # For auto-calibration we always need the YOLO model.
-    # If mode fell back to HSV, we still try to load the model
-    # just for quarter detection (straw segmentation stays HSV).
+    # Load YOLO for calibration even if running HSV detection mode
     calib_model = yolo_model
     if CALIBRATION_MODE == "auto" and calib_model is None:
         calib_model = load_yolo_model(YOLO_MODEL_PATH)
 
+    # HSV tuning only needed in full HSV mode
     if mode == "hsv":
         hsv_lower, hsv_upper = get_hsv(files[0])
 
-    # Manual calibration: ask once up-front (same as before)
     if CALIBRATION_MODE == "manual":
         global_pixel_to_mm = get_calibration_manual()
     else:
-        global_pixel_to_mm = None   # will be set per-image or on first hit
+        global_pixel_to_mm = None
 
-    cached_ratio = None             # carries the last successful auto-calibration
-
+    cached_ratio = None
     all_results  = []
     skipped      = []
 
     for idx, f in enumerate(files):
         log.info(f"\nImage {idx+1}/{len(files)}: {f}")
 
-        # ---- Load image early so calibration can inspect it ----
         raw_image = cv2.imread(f)
         if raw_image is None:
             log.error(f"Failed to load image: {f}")
@@ -952,7 +961,6 @@ if __name__ == "__main__":
             continue
         raw_image = cv2.resize(raw_image, (800, 600))
 
-        # ---- Determine pixel_to_mm for this image ----
         if CALIBRATION_MODE == "manual":
             pixel_to_mm = global_pixel_to_mm
         else:
@@ -961,12 +969,12 @@ if __name__ == "__main__":
             )
             if pixel_to_mm is None:
                 skipped.append(f)
-                continue                    # skip — no quarter found
+                continue
 
-        # ---- Process image ----
         res, overlay = process_image(
             f, pixel_to_mm, mode,
-            hsv_lower=hsv_lower, hsv_upper=hsv_upper,
+            hsv_lower=hsv_lower,
+            hsv_upper=hsv_upper,
             yolo_model=yolo_model
         )
         all_results.extend(res)
@@ -985,13 +993,11 @@ if __name__ == "__main__":
 
     cv2.destroyAllWindows()
 
-    # ---- Report skipped images ----
     if skipped:
-        print(f"\n  ⚠  {len(skipped)} image(s) skipped (no quarter detected):")
+        print(f"\n  {len(skipped)} image(s) skipped (no quarter detected):")
         for s in skipped:
             print(f"       {s}")
 
-    # ---- Save results ----
     df = pd.DataFrame(all_results)
     if len(df) > 0:
         col_order = [
@@ -1001,7 +1007,7 @@ if __name__ == "__main__":
             "Skeleton_Pixels", "Path_Euclidean_Ratio",
             "Pixel_to_mm_Used", "Pixel_to_mm"
         ]
-        df = df[[c for c in col_order if c in df.columns]]
+        df   = df[[c for c in col_order if c in df.columns]]
         xlsx = safe_save_excel(df, "straw_results.xlsx")
         csv  = os.path.abspath("straw_results.csv")
         df.to_csv(csv, index=False)
@@ -1009,7 +1015,7 @@ if __name__ == "__main__":
         print(f"Results saved to:\n  Excel : {xlsx}\n  CSV   : {csv}")
     else:
         log.warning("No straw detected.")
-        print("\nNo straw detected. Check HSV settings or YOLO model.")
+        print("\nNo straw detected. Check YOLO model path or HSV settings.")
 
     log.info(f"=== Done in {time.time()-t0:.2f}s ===")
     print(f"\nDebug log: {os.path.abspath(LOG_FILE)}")

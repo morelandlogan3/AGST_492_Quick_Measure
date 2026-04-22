@@ -1,15 +1,142 @@
-2026-04-08 13:18:59,312 [INFO] === Straw Measurement Tool Started ===
-2026-04-08 13:18:59,313 [INFO] Detection mode     : HSV
-2026-04-08 13:18:59,314 [INFO] Calibration mode   : AUTO
-2026-04-08 13:18:59,314 [INFO] Calibration per img: False
-2026-04-08 13:18:59,314 [INFO] Angle tolerance    : 35.0°  |  Cluster radius: 80px
-2026-04-08 13:18:59,316 [INFO] Opening file picker...
-2026-04-08 13:19:04,342 [INFO] Selected 1 file(s)
-2026-04-08 13:19:41,737 [WARNING] YOLO model not found at 'straw_model.pt'. Falling back to HSV.
-2026-04-08 13:19:41,738 [INFO] Opening HSV tuning: C:/Users/Logan/Downloads/IMG_2466.jpg
-2026-04-08 13:20:24,550 [INFO] HSV Lower: [  0   0 134]  Upper: [179 255 255]
-2026-04-08 13:20:24,553 [INFO] 
-Image 1/1: C:/Users/Logan/Downloads/IMG_2466.jpg
-2026-04-08 13:20:24,726 [WARNING]   [IMG_2466.jpg] SKIPPED — no quarter detected and no cached calibration available. Add a US quarter to the image or switch CALIBRATION_MODE to 'manual'.
-2026-04-08 13:20:24,733 [WARNING] No straw detected.
-2026-04-08 13:20:24,734 [INFO] === Done in 85.42s ===
+2026-04-21 20:18:50,521 [INFO] === Straw Measurement Tool Started ===
+2026-04-21 20:18:50,521 [INFO] Detection mode     : YOLO
+2026-04-21 20:18:50,521 [INFO] Calibration mode   : AUTO
+2026-04-21 20:18:50,522 [INFO] Calibration per img: False
+2026-04-21 20:18:50,522 [INFO] YOLO model path    : best.pt
+2026-04-21 20:18:50,522 [INFO] Angle tolerance    : 35.0  |  Cluster radius: 80px
+2026-04-21 20:18:50,522 [INFO] Opening file picker...
+2026-04-21 20:18:57,317 [INFO] Selected 1 file(s)
+2026-04-21 20:19:09,244 [INFO] YOLO model loaded: best.pt
+2026-04-21 20:19:09,244 [INFO]   Classes: {0: 'quarter', 1: 'straw'}
+2026-04-21 20:19:09,245 [INFO] 
+Image 1/1: C:/Users/Logan/Documents/VS_Code/AGST 492 project/Straw_Images/Dropbox/IMG_2737.jpg
+2026-04-21 20:19:09,584 [INFO]   Quarter ellipse: major=46.4px minor=38.5px avg=42.4px
+2026-04-21 20:19:10,415 [INFO]   Calibration: 24.26mm / 42.44px = 0.57165 mm/px [method=ellipse conf=0.90]
+2026-04-21 20:19:10,415 [INFO]   [IMG_2737.jpg] Auto-calibration OK: 0.57165 mm/px [ellipse]
+2026-04-21 20:19:10,415 [INFO] 
+============================================================
+2026-04-21 20:19:10,415 [INFO] Processing [YOLO]: IMG_2737.jpg
+2026-04-21 20:19:10,841 [DEBUG]   Straw idx=0 class=straw conf=0.95 mask_px=1056
+2026-04-21 20:19:10,843 [DEBUG]   Straw idx=1 class=straw conf=0.95 mask_px=4212
+2026-04-21 20:19:10,846 [DEBUG]   Straw idx=2 class=straw conf=0.94 mask_px=2057
+2026-04-21 20:19:10,848 [DEBUG]   Straw idx=3 class=straw conf=0.91 mask_px=3503
+2026-04-21 20:19:10,851 [DEBUG]   Straw idx=4 class=straw conf=0.91 mask_px=3121
+2026-04-21 20:19:10,851 [DEBUG]   Skipping quarter detection (idx=5)
+2026-04-21 20:19:10,854 [DEBUG]   Straw idx=6 class=straw conf=0.88 mask_px=3001
+2026-04-21 20:19:10,857 [DEBUG]   Straw idx=7 class=straw conf=0.85 mask_px=876
+2026-04-21 20:19:10,859 [DEBUG]   Straw idx=8 class=straw conf=0.81 mask_px=632
+2026-04-21 20:19:10,862 [DEBUG]   Straw idx=9 class=straw conf=0.80 mask_px=1796
+2026-04-21 20:19:10,865 [DEBUG]   Straw idx=10 class=straw conf=0.57 mask_px=1980
+2026-04-21 20:19:10,868 [INFO] YOLO instance masks returned: 10
+2026-04-21 20:19:11,335 [INFO] Masks to process: 10
+2026-04-21 20:19:11,335 [DEBUG] 
+  === Mask 0 ===
+2026-04-21 20:19:11,342 [DEBUG]   Skeleton pixels: 238
+2026-04-21 20:19:11,345 [DEBUG]   Skeleton -- endpoints: 6  branch pts: 0  body: 232
+2026-04-21 20:19:11,708 [DEBUG]   Simple measurement: (np.int64(110), np.int64(276)) -> (np.int64(201), np.int64(417)) (true_endpoint)
+2026-04-21 20:19:11,708 [DEBUG]   Pair (np.int64(110), np.int64(276))<->(np.int64(201), np.int64(417)): path=infpx -- too short/disconnected.
+2026-04-21 20:19:11,709 [DEBUG] 
+  === Mask 1 ===
+2026-04-21 20:19:11,721 [DEBUG]   Skeleton pixels: 391
+2026-04-21 20:19:11,725 [DEBUG]   Skeleton -- endpoints: 8  branch pts: 10  body: 373
+2026-04-21 20:19:12,768 [INFO]   Mask 1: overlap detected (10 branch pts, 8 endpoints)
+2026-04-21 20:19:12,769 [DEBUG]   Crossing centroid: [      318.7       217.3]
+2026-04-21 20:19:12,770 [DEBUG]     EP (np.int64(369), np.int64(160))  dist=76.2px  angle=7.1
+2026-04-21 20:19:12,770 [DEBUG]   Not enough nearby endpoints to pair.
+2026-04-21 20:19:12,771 [WARNING]   Mask 1: pairing failed -- falling back.
+2026-04-21 20:19:12,771 [DEBUG]   Simple measurement: (np.int64(205), np.int64(321)) -> (np.int64(464), np.int64(85)) (true_endpoint)
+2026-04-21 20:19:12,777 [INFO]   Straw 1: 217.67mm | Straight | HIGH | reconstructed=False
+2026-04-21 20:19:12,778 [DEBUG] 
+  === Mask 2 ===
+2026-04-21 20:19:12,786 [DEBUG]   Skeleton pixels: 218
+2026-04-21 20:19:12,789 [DEBUG]   Skeleton -- endpoints: 2  branch pts: 0  body: 216
+2026-04-21 20:19:13,085 [DEBUG]   Simple measurement: (np.int64(190), np.int64(290)) -> (np.int64(328), np.int64(111)) (true_endpoint)
+2026-04-21 20:19:13,088 [INFO]   Straw 2: 147.73mm | Curved | HIGH | reconstructed=False
+2026-04-21 20:19:13,089 [DEBUG] 
+  === Mask 3 ===
+2026-04-21 20:19:13,098 [DEBUG]   Skeleton pixels: 220
+2026-04-21 20:19:13,100 [DEBUG]   Skeleton -- endpoints: 5  branch pts: 11  body: 204
+2026-04-21 20:19:13,383 [INFO]   Mask 3: overlap detected (11 branch pts, 5 endpoints)
+2026-04-21 20:19:13,384 [DEBUG]   Crossing centroid: [     276.73         504]
+2026-04-21 20:19:13,384 [DEBUG]     EP (np.int64(248), np.int64(511))  dist=29.6px  angle=172.9
+2026-04-21 20:19:13,385 [DEBUG]     EP (np.int64(297), np.int64(488))  dist=25.8px  angle=-58.0
+2026-04-21 20:19:13,385 [DEBUG]     EP (np.int64(298), np.int64(522))  dist=27.9px  angle=180.0
+2026-04-21 20:19:13,386 [DEBUG]     EP (np.int64(325), np.int64(514))  dist=49.3px  angle=-74.1
+2026-04-21 20:19:13,386 [DEBUG]   No angularly compatible endpoint pairs found.
+2026-04-21 20:19:13,387 [WARNING]   Mask 3: pairing failed -- falling back.
+2026-04-21 20:19:13,387 [DEBUG]   Simple measurement: (np.int64(154), np.int64(460)) -> (np.int64(325), np.int64(514)) (true_endpoint)
+2026-04-21 20:19:13,390 [INFO]   Straw 3: 113.63mm | Curved | HIGH | reconstructed=False
+2026-04-21 20:19:13,391 [DEBUG] 
+  === Mask 4 ===
+2026-04-21 20:19:13,398 [DEBUG]   Skeleton pixels: 342
+2026-04-21 20:19:13,402 [DEBUG]   Skeleton -- endpoints: 2  branch pts: 0  body: 340
+2026-04-21 20:19:14,013 [DEBUG]   Simple measurement: (np.int64(108), np.int64(182)) -> (np.int64(345), np.int64(465)) (true_endpoint)
+2026-04-21 20:19:14,017 [INFO]   Straw 4: 238.26mm | Curved | HIGH | reconstructed=False
+2026-04-21 20:19:14,018 [DEBUG] 
+  === Mask 5 ===
+2026-04-21 20:19:14,024 [DEBUG]   Skeleton pixels: 229
+2026-04-21 20:19:14,027 [DEBUG]   Skeleton -- endpoints: 2  branch pts: 0  body: 227
+2026-04-21 20:19:14,291 [DEBUG]   Simple measurement: (np.int64(52), np.int64(456)) -> (np.int64(278), np.int64(561)) (true_endpoint)
+2026-04-21 20:19:14,294 [INFO]   Straw 5: 157.57mm | Curved | HIGH | reconstructed=False
+2026-04-21 20:19:14,295 [DEBUG] 
+  === Mask 6 ===
+2026-04-21 20:19:14,301 [DEBUG]   Skeleton pixels: 101
+2026-04-21 20:19:14,303 [DEBUG]   Skeleton -- endpoints: 7  branch pts: 8  body: 86
+2026-04-21 20:19:14,360 [INFO]   Mask 6: overlap detected (8 branch pts, 7 endpoints)
+2026-04-21 20:19:14,360 [DEBUG]   Crossing centroid: [     297.12      343.38]
+2026-04-21 20:19:14,361 [DEBUG]     EP (np.int64(275), np.int64(366))  dist=31.6px  angle=135.0
+2026-04-21 20:19:14,361 [DEBUG]     EP (np.int64(286), np.int64(340))  dist=11.6px  angle=104.0
+2026-04-21 20:19:14,361 [DEBUG]     EP (np.int64(288), np.int64(356))  dist=15.6px  angle=-54.5
+2026-04-21 20:19:14,362 [DEBUG]     EP (np.int64(290), np.int64(352))  dist=11.2px  angle=119.7
+2026-04-21 20:19:14,362 [DEBUG]     EP (np.int64(292), np.int64(382))  dist=39.0px  angle=180.0
+2026-04-21 20:19:14,362 [DEBUG]     EP (np.int64(297), np.int64(321))  dist=22.4px  angle=7.1
+2026-04-21 20:19:14,363 [DEBUG]     EP (np.int64(305), np.int64(331))  dist=14.7px  angle=-105.9
+2026-04-21 20:19:14,363 [INFO]   Endpoint pairing: 7 nearby -> 3 pair(s)
+2026-04-21 20:19:14,364 [DEBUG]   Pair (np.int64(288), np.int64(356))<->(np.int64(290), np.int64(352)): path=infpx -- too short/disconnected.
+2026-04-21 20:19:14,365 [INFO]   Straw 6.1: 37.95mm | Straight | RECONSTRUCTED | reconstructed=True
+2026-04-21 20:19:14,366 [INFO]   Straw 6.2: 14.00mm | Curved | RECONSTRUCTED | reconstructed=True
+2026-04-21 20:19:14,366 [DEBUG] 
+  === Mask 7 ===
+2026-04-21 20:19:14,372 [DEBUG]   Skeleton pixels: 89
+2026-04-21 20:19:14,374 [DEBUG]   Skeleton -- endpoints: 4  branch pts: 8  body: 77
+2026-04-21 20:19:14,424 [INFO]   Mask 7: overlap detected (8 branch pts, 4 endpoints)
+2026-04-21 20:19:14,424 [DEBUG]   Crossing centroid: [     447.25         317]
+2026-04-21 20:19:14,425 [DEBUG]     EP (np.int64(419), np.int64(332))  dist=32.0px  angle=150.3
+2026-04-21 20:19:14,425 [DEBUG]     EP (np.int64(440), np.int64(308))  dist=11.6px  angle=90.0
+2026-04-21 20:19:14,425 [DEBUG]     EP (np.int64(449), np.int64(295))  dist=22.1px  angle=-7.1
+2026-04-21 20:19:14,425 [DEBUG]     EP (np.int64(464), np.int64(337))  dist=26.1px  angle=-116.6
+2026-04-21 20:19:14,426 [INFO]   Endpoint pairing: 4 nearby -> 2 pair(s)
+2026-04-21 20:19:14,428 [INFO]   Straw 7.0: 38.86mm | Curved | RECONSTRUCTED | reconstructed=True
+2026-04-21 20:19:14,430 [INFO]   Straw 7.1: 26.75mm | Curved | RECONSTRUCTED | reconstructed=True
+2026-04-21 20:19:14,431 [DEBUG] 
+  === Mask 8 ===
+2026-04-21 20:19:14,437 [DEBUG]   Skeleton pixels: 146
+2026-04-21 20:19:14,440 [DEBUG]   Skeleton -- endpoints: 3  branch pts: 4  body: 139
+2026-04-21 20:19:14,549 [INFO]   Mask 8: overlap detected (4 branch pts, 3 endpoints)
+2026-04-21 20:19:14,550 [DEBUG]   Crossing centroid: [        350       351.5]
+2026-04-21 20:19:14,550 [DEBUG]     EP (np.int64(346), np.int64(353))  dist=4.3px  angle=119.7
+2026-04-21 20:19:14,550 [DEBUG]     EP (np.int64(351), np.int64(360))  dist=8.6px  angle=-172.9
+2026-04-21 20:19:14,551 [DEBUG]   No angularly compatible endpoint pairs found.
+2026-04-21 20:19:14,551 [WARNING]   Mask 8: pairing failed -- falling back.
+2026-04-21 20:19:14,551 [DEBUG]   Simple measurement: (np.int64(351), np.int64(360)) -> (np.int64(436), np.int64(223)) (true_endpoint)
+2026-04-21 20:19:14,553 [INFO]   Straw 8: 99.92mm | Straight | HIGH | reconstructed=False
+2026-04-21 20:19:14,554 [DEBUG] 
+  === Mask 9 ===
+2026-04-21 20:19:14,564 [DEBUG]   Skeleton pixels: 146
+2026-04-21 20:19:14,566 [DEBUG]   Skeleton -- endpoints: 8  branch pts: 20  body: 118
+2026-04-21 20:19:14,676 [INFO]   Mask 9: overlap detected (20 branch pts, 8 endpoints)
+2026-04-21 20:19:14,676 [DEBUG]   Crossing centroid: [      456.7      188.55]
+2026-04-21 20:19:14,677 [DEBUG]     EP (np.int64(426), np.int64(183))  dist=31.2px  angle=104.0
+2026-04-21 20:19:14,677 [DEBUG]     EP (np.int64(437), np.int64(222))  dist=38.8px  angle=180.0
+2026-04-21 20:19:14,677 [DEBUG]     EP (np.int64(444), np.int64(171))  dist=21.7px  angle=-7.1
+2026-04-21 20:19:14,678 [DEBUG]     EP (np.int64(451), np.int64(187))  dist=5.9px  angle=-113.2
+2026-04-21 20:19:14,678 [DEBUG]     EP (np.int64(454), np.int64(209))  dist=20.6px  angle=-143.1
+2026-04-21 20:19:14,678 [DEBUG]     EP (np.int64(477), np.int64(200))  dist=23.3px  angle=-138.8
+2026-04-21 20:19:14,679 [DEBUG]     EP (np.int64(482), np.int64(169))  dist=32.0px  angle=-7.1
+2026-04-21 20:19:14,679 [DEBUG]     EP (np.int64(488), np.int64(183))  dist=31.8px  angle=-76.0
+2026-04-21 20:19:14,679 [INFO]   Endpoint pairing: 8 nearby -> 2 pair(s)
+2026-04-21 20:19:14,681 [INFO]   Straw 9.0: 39.70mm | Curved | RECONSTRUCTED | reconstructed=True
+2026-04-21 20:19:14,683 [INFO]   Straw 9.1: 33.65mm | Curved | RECONSTRUCTED | reconstructed=True
+2026-04-21 20:19:14,683 [INFO] Image done: 12 straw(s) measured from 10 mask(s).
+2026-04-21 20:19:15,523 [INFO] Overlay saved: C:\Users\Logan\Documents\VS_Code\AGST 492 project\Straw_Images\Dropbox\overlay_IMG_2737.jpg
+2026-04-21 20:19:18,135 [INFO] === Done in 27.61s ===
