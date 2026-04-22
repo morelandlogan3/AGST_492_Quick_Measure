@@ -11,6 +11,10 @@
 #   which is fed directly into skeletonization and length
 #   measurement. No HSV color segmentation needed per straw.
 #
+#   In YOLO mode, debug popup windows are suppressed. The final
+#   overlay image for each processed image is saved to disk AND
+#   embedded as a photo in the Excel results file.
+#
 # CALIBRATION:
 #   When CALIBRATION_MODE = "auto", the pipeline looks for a YOLO
 #   detection whose class name matches QUARTER_CLASS_NAME.
@@ -42,12 +46,21 @@ import sys
 import time
 import heapq
 import logging
+import tempfile
 import pandas as pd
 from skimage.morphology import skeletonize
 from scipy.spatial.distance import cdist
 from scipy import ndimage as ndi
 from tkinter import Tk, filedialog
 from itertools import combinations
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.drawing.image import Image as XLImage
+from openpyxl.utils import get_column_letter
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.drawing.image import Image as XLImage
+from openpyxl.utils import get_column_letter
 
 # ============================================================
 # CONFIGURATION
@@ -66,18 +79,16 @@ QUARTER_DIAMETER_MM    = 24.26      # US quarter diameter in millimetres
 PIXEL_TO_MM      = 0.1              # Fallback / manual default (mm per pixel)
 MIN_CONTOUR_AREA = 100              # Minimum contour area in pixels
 CURVE_THRESHOLD  = 1.1              # path/euclidean ratio -> "Curved"
-DEBUG_MODE       = True             # Show debug windows
+DEBUG_MODE       = True             # Show debug windows (suppressed in YOLO mode)
 LOG_FILE         = "straw_debug.log"
 
 # --- Debugger file bypass ---
-# Add full paths here to skip the file picker during testing
 DEBUG_FILES = [
     # r"C:\Users\Logan\Downloads\IMG_2466.jpg",
 ]
 
 # --- HSV range for straw color ---
 # Only used in HSV mode or as fallback if YOLO returns no masks.
-# Run with DETECTION_MODE = "hsv" first to fine-tune these values.
 STRAW_HSV_LOWER = np.array([10,  40,  80])
 STRAW_HSV_UPPER = np.array([35, 255, 255])
 
@@ -85,6 +96,10 @@ STRAW_HSV_UPPER = np.array([35, 255, 255])
 ANGLE_TOLERANCE_DEG  = 35.0
 CLUSTER_RADIUS_PX    = 80
 MIN_PATH_LENGTH_PX   = 20
+
+# Module-level flag — set True automatically in YOLO mode.
+# Suppresses all cv2.imshow popup windows.
+_SUPPRESS_POPUPS = False
 
 # ============================================================
 # LOGGING
@@ -100,8 +115,14 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Runtime flag — set True when in YOLO mode to suppress popups
+_SUPPRESS_POPUPS = False
+
 
 def debug_step(name, image, wait=200):
+    """Show a debug window unless popups are suppressed (YOLO mode)."""
+    if _SUPPRESS_POPUPS:
+        return
     if DEBUG_MODE and image is not None:
         cv2.imshow(f"DEBUG: {name}", image)
         cv2.waitKey(wait)
@@ -161,16 +182,6 @@ def select_files():
 # ============================================================
 
 def calibrate_from_quarter(image, yolo_model):
-    """
-    Run YOLO on the image and find a quarter detection.
-
-    Size estimation priority:
-      1. Ellipse fit to segmentation mask  (most accurate)
-      2. Bounding-box average (w+h)/2      (fallback)
-
-    Returns (pixel_to_mm, method_string) on success,
-            (None, reason_string) on failure.
-    """
     if yolo_model is None:
         return None, "no YOLO model loaded"
 
@@ -210,7 +221,7 @@ def calibrate_from_quarter(image, yolo_model):
                         method         = "ellipse"
                         log.info(f"  Quarter ellipse: major={major_axis:.1f}px "
                                  f"minor={minor_axis:.1f}px avg={pixel_diameter:.1f}px")
-                        if DEBUG_MODE:
+                        if not _SUPPRESS_POPUPS and DEBUG_MODE:
                             dbg = image.copy()
                             cv2.ellipse(dbg, ellipse, (0, 255, 0), 2)
                             cv2.putText(dbg,
@@ -229,7 +240,7 @@ def calibrate_from_quarter(image, yolo_model):
             pixel_diameter = (bw + bh) / 2.0
             method         = "bbox_fallback"
             log.info(f"  Quarter bbox: w={bw}px h={bh}px avg={pixel_diameter:.1f}px")
-            if DEBUG_MODE:
+            if not _SUPPRESS_POPUPS and DEBUG_MODE:
                 dbg = image.copy()
                 cv2.rectangle(dbg, (x1, y1), (x2, y2), (0, 200, 255), 2)
                 cv2.putText(dbg,
@@ -411,9 +422,7 @@ def get_masks_yolo(image, model, conf_threshold):
     Uses YOLO instance segmentation masks directly.
     Each straw detection returns its own pixel-level mask.
     Quarter detections are skipped -- used only for calibration.
-
-    Falls back to bounding-box filled mask if the model returns
-    no mask data (e.g. detection-only model loaded by mistake).
+    No debug popups are shown in YOLO mode.
     """
     h_img, w_img = image.shape[:2]
     results      = model(image, conf=conf_threshold, verbose=False)[0]
@@ -430,7 +439,6 @@ def get_masks_yolo(image, model, conf_threshold):
         cls_id   = int(box.cls[0])
         cls_name = names.get(cls_id, "").lower().strip()
 
-        # Skip quarter -- calibration only
         if cls_name == QUARTER_CLASS_NAME.lower().strip():
             log.debug(f"  Skipping quarter detection (idx={idx})")
             continue
@@ -452,9 +460,8 @@ def get_masks_yolo(image, model, conf_threshold):
             kernel      = np.ones((3, 3), np.uint8)
             mask_bin    = cv2.morphologyEx(mask_bin, cv2.MORPH_CLOSE, kernel)
             full_mask   = mask_bin
-
-        # Fallback: fill the bounding box
         else:
+            # Fallback: fill bounding box
             if (x2 - x1) >= 5 and (y2 - y1) >= 5:
                 full_mask[y1:y2, x1:x2] = 255
                 log.debug(f"  Using bbox fill fallback for idx={idx}")
@@ -474,21 +481,6 @@ def get_masks_yolo(image, model, conf_threshold):
                   f"mask_px={int(np.sum(full_mask > 0))}")
 
     log.info(f"YOLO instance masks returned: {len(masks)}")
-
-    if DEBUG_MODE and masks:
-        combined = np.zeros((h_img, w_img), np.uint8)
-        for e in masks:
-            combined = cv2.bitwise_or(combined, e["mask"])
-        dbg = image.copy()
-        for e in masks:
-            x1, y1, x2, y2 = e["bbox"]
-            cv2.rectangle(dbg, (x1, y1), (x2, y2), (0, 255, 100), 1)
-            cv2.putText(dbg, f"{e['class']} {e['confidence']:.2f}",
-                        (x1, max(y1 - 6, 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 100), 1)
-        debug_step("YOLO Detections + Boxes", dbg)
-        debug_step("YOLO Combined Instance Masks", combined)
-
     return masks
 
 # ============================================================
@@ -512,7 +504,6 @@ def dijkstra(graph, start, end):
 
 
 def dijkstra_path(graph, start, end):
-    """Returns (distance, [list of nodes on path])."""
     queue = [(0, start, [start])]
     dist  = {n: float('inf') for n in graph}
     dist[start] = 0
@@ -591,7 +582,6 @@ def cluster_and_pair_endpoints(endpoints, branch_points, graph):
 
     bp_arr   = np.array(branch_points)
     centroid = bp_arr.mean(axis=0)
-    log.debug(f"  Crossing centroid: {centroid}")
 
     nearby = []
     for ep in endpoints:
@@ -599,10 +589,8 @@ def cluster_and_pair_endpoints(endpoints, branch_points, graph):
         if dist <= CLUSTER_RADIUS_PX:
             angle = endpoint_exit_angle(ep, graph)
             nearby.append({"ep": ep, "dist": dist, "angle": angle})
-            log.debug(f"    EP {ep}  dist={dist:.1f}px  angle={angle:.1f}")
 
     if len(nearby) < 2:
-        log.debug("  Not enough nearby endpoints to pair.")
         return []
 
     scored_pairs = []
@@ -614,7 +602,6 @@ def cluster_and_pair_endpoints(endpoints, branch_points, graph):
             scored_pairs.append((deviation, a["ep"], b["ep"]))
 
     if not scored_pairs:
-        log.debug("  No angularly compatible endpoint pairs found.")
         return []
 
     scored_pairs.sort(key=lambda x: x[0])
@@ -659,7 +646,6 @@ def measure_straw_pair(ep_a, ep_b, graph, all_points, straw_id,
     path_len, path_nodes = dijkstra_path(graph, ep_a, ep_b)
 
     if path_len == float('inf') or path_len < MIN_PATH_LENGTH_PX:
-        log.debug(f"  Pair {ep_a}<->{ep_b}: path={path_len:.1f}px -- too short/disconnected.")
         return None
 
     euclid = np.linalg.norm(np.array(ep_a) - np.array(ep_b))
@@ -678,8 +664,7 @@ def measure_straw_pair(ep_a, ep_b, graph, all_points, straw_id,
     else:
         confidence = "HIGH"
 
-    log.info(f"  Straw {straw_id}: {length_mm:.2f}mm | {shape} | {confidence} "
-             f"| reconstructed={is_reconstructed}")
+    log.info(f"  Straw {straw_id}: {length_mm:.2f}mm | {shape} | {confidence}")
 
     path_color = (0, 140, 255) if is_reconstructed else (0, 200, 255)
     for node in path_nodes:
@@ -723,7 +708,6 @@ def measure_mask(mask_entry, base_straw_id, pixel_to_mm, overlay):
     skeleton = skeletonize(m // 255)
     skeleton = (skeleton * 255).astype(np.uint8)
     skel_px  = int(np.sum(skeleton > 0))
-    log.debug(f"  Skeleton pixels: {skel_px}")
 
     if skel_px < 2:
         log.warning(f"  Mask {base_straw_id}: skeleton too short, skipping.")
@@ -774,7 +758,6 @@ def measure_mask(mask_entry, base_straw_id, pixel_to_mm, overlay):
         ep_b      = tuple(pts[idx[1]])
         ep_method = "fallback_max_dist"
 
-    log.debug(f"  Simple measurement: {ep_a} -> {ep_b} ({ep_method})")
     res = measure_straw_pair(
         ep_a, ep_b, graph, points, base_straw_id,
         pixel_to_mm, overlay, source, yolo_conf,
@@ -807,7 +790,6 @@ def process_image(image_path, pixel_to_mm, mode,
 
     if mode == "yolo" and yolo_model is not None:
         mask_entries = get_masks_yolo(image, yolo_model, YOLO_CONF)
-        # If YOLO found nothing fall back to HSV on the full image
         if len(mask_entries) == 0:
             log.warning("YOLO returned 0 straw detections -- falling back to HSV.")
             mask_entries = get_masks_hsv(
@@ -828,7 +810,6 @@ def process_image(image_path, pixel_to_mm, mode,
 
     all_results = []
     for i, entry in enumerate(mask_entries):
-        log.debug(f"\n  === Mask {i} ===")
         results = measure_mask(entry, i, pixel_to_mm, overlay)
         for res in results:
             res["Image"]       = os.path.basename(image_path)
@@ -846,7 +827,10 @@ def process_image(image_path, pixel_to_mm, mode,
                 (10, 580), cv2.FONT_HERSHEY_SIMPLEX,
                 0.38, (200, 200, 200), 1, cv2.LINE_AA)
 
-    debug_step("Final Overlay", overlay, wait=800)
+    # Only show final overlay popup in HSV mode
+    if not _SUPPRESS_POPUPS:
+        debug_step("Final Overlay", overlay, wait=800)
+
     return all_results, overlay
 
 # ============================================================
@@ -887,13 +871,128 @@ def print_summary(df):
     print("="*60 + "\n")
 
 # ============================================================
-# SAFE EXCEL SAVE
+# EXCEL SAVE WITH EMBEDDED OVERLAY IMAGES
 # ============================================================
 
-def safe_save_excel(df, filename):
+def save_excel_with_images(df, overlay_paths, filename):
+    """
+    Saves measurement data to Excel with:
+    - Sheet 1 (Results): full data table with professional formatting
+    - Sheet 2 (Overlays): each processed image embedded, one per row,
+      labeled with the source image filename and straw count
+    """
+    wb = Workbook()
+
+    # ---- Sheet 1: Results data ----
+    ws_data = wb.active
+    ws_data.title = "Results"
+
+    header_fill   = PatternFill("solid", fgColor="2E4057")
+    header_font   = Font(bold=True, color="FFFFFF", name="Arial", size=11)
+    row_font      = Font(name="Arial", size=10)
+    alt_fill      = PatternFill("solid", fgColor="EAF4FB")
+    border_side   = Side(style="thin", color="CCCCCC")
+    cell_border   = Border(
+        left=border_side, right=border_side,
+        top=border_side,  bottom=border_side
+    )
+
+    col_order = [
+        "Image", "Straw_ID", "Length_mm", "Shape",
+        "Overlap_Detected", "Reconstructed", "Confidence",
+        "Detection_Source", "YOLO_Conf", "Endpoint_Method",
+        "Skeleton_Pixels", "Path_Euclidean_Ratio",
+        "Pixel_to_mm_Used", "Pixel_to_mm"
+    ]
+    cols = [c for c in col_order if c in df.columns]
+
+    # Write header
+    for col_idx, col_name in enumerate(cols, start=1):
+        cell              = ws_data.cell(row=1, column=col_idx, value=col_name)
+        cell.font         = header_font
+        cell.fill         = header_fill
+        cell.alignment    = Alignment(horizontal="center", vertical="center")
+        cell.border       = cell_border
+
+    # Write data rows
+    for row_idx, (_, row) in enumerate(df[cols].iterrows(), start=2):
+        fill = alt_fill if row_idx % 2 == 0 else None
+        for col_idx, col_name in enumerate(cols, start=1):
+            val  = row[col_name]
+            cell = ws_data.cell(row=row_idx, column=col_idx, value=val)
+            cell.font      = row_font
+            cell.border    = cell_border
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            if fill:
+                cell.fill = fill
+
+    # Auto-size columns
+    for col_idx, col_name in enumerate(cols, start=1):
+        max_len = max(len(str(col_name)),
+                      max((len(str(df[col_name].iloc[i]))
+                           for i in range(len(df))), default=0))
+        ws_data.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, 30)
+
+    ws_data.row_dimensions[1].height = 20
+    ws_data.freeze_panes = "A2"
+
+    # ---- Sheet 2: Overlay images ----
+    ws_imgs = wb.create_sheet(title="Overlays")
+    ws_imgs.column_dimensions["A"].width = 18
+    ws_imgs.column_dimensions["B"].width = 100
+
+    ws_imgs["A1"] = "Image"
+    ws_imgs["B1"] = "Overlay"
+    ws_imgs["A1"].font = header_font
+    ws_imgs["B1"].font = header_font
+    ws_imgs["A1"].fill = header_fill
+    ws_imgs["B1"].fill = header_fill
+    ws_imgs["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    ws_imgs["B1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    img_row = 2
+    IMG_HEIGHT_PX  = 300   # display height in Excel (pixels)
+    ROW_HEIGHT_PT  = 225   # approx row height in points to fit image
+
+    for img_path, fname, straw_count in overlay_paths:
+        if not os.path.exists(img_path):
+            log.warning(f"Overlay not found for embedding: {img_path}")
+            continue
+
+        label = f"{fname}\n{straw_count} straw(s)"
+        cell  = ws_imgs.cell(row=img_row, column=1, value=label)
+        cell.font      = Font(name="Arial", size=10, bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center",
+                                   wrap_text=True)
+
+        try:
+            xl_img = XLImage(img_path)
+            # Scale to fixed display height, preserve aspect ratio
+            orig_h = xl_img.height
+            orig_w = xl_img.width
+            scale  = IMG_HEIGHT_PX / orig_h if orig_h > 0 else 1.0
+            xl_img.height = IMG_HEIGHT_PX
+            xl_img.width  = int(orig_w * scale)
+
+            # Anchor image in column B of this row
+            col_letter    = get_column_letter(2)
+            anchor_cell   = f"{col_letter}{img_row}"
+            xl_img.anchor = anchor_cell
+            ws_imgs.add_image(xl_img)
+
+            ws_imgs.row_dimensions[img_row].height = ROW_HEIGHT_PT
+            log.info(f"  Embedded overlay: {img_path}")
+        except Exception as e:
+            log.warning(f"  Could not embed image {img_path}: {e}")
+            ws_imgs.cell(row=img_row, column=2,
+                         value=f"[Image could not be embedded: {e}]")
+
+        img_row += 1
+
+    # Save
     base_path = os.path.abspath(filename)
     try:
-        df.to_excel(base_path, index=False)
+        wb.save(base_path)
         return base_path
     except PermissionError:
         ts        = time.strftime("%Y%m%d_%H%M%S")
@@ -901,7 +1000,7 @@ def safe_save_excel(df, filename):
         new_path  = f"{name}_{ts}{ext}"
         log.warning(f"'{base_path}' locked -- saving to '{new_path}'")
         print(f"\n  WARNING: File open in Excel. Saving to {os.path.basename(new_path)}\n")
-        df.to_excel(new_path, index=False)
+        wb.save(new_path)
         return new_path
 
 # ============================================================
@@ -909,6 +1008,7 @@ def safe_save_excel(df, filename):
 # ============================================================
 
 if __name__ == "__main__":
+
     t0 = time.time()
     log.info("=== Straw Measurement Tool Started ===")
     log.info(f"Detection mode     : {DETECTION_MODE.upper()}")
@@ -933,6 +1033,12 @@ if __name__ == "__main__":
             log.warning("Falling back to HSV mode.")
             mode = "hsv"
 
+    # Suppress all popup windows in YOLO mode
+    if mode == "yolo":
+        _SUPPRESS_POPUPS = True
+        log.info("YOLO mode: debug popups suppressed. "
+                 "Overlay images will be embedded in Excel.")
+
     # Load YOLO for calibration even if running HSV detection mode
     calib_model = yolo_model
     if CALIBRATION_MODE == "auto" and calib_model is None:
@@ -947,9 +1053,10 @@ if __name__ == "__main__":
     else:
         global_pixel_to_mm = None
 
-    cached_ratio = None
-    all_results  = []
-    skipped      = []
+    cached_ratio  = None
+    all_results   = []
+    skipped       = []
+    overlay_paths = []   # list of (saved_path, filename, straw_count)
 
     for idx, f in enumerate(files):
         log.info(f"\nImage {idx+1}/{len(files)}: {f}")
@@ -985,13 +1092,18 @@ if __name__ == "__main__":
             out_img = os.path.join(out_dir, f"overlay_{base}.jpg")
             cv2.imwrite(out_img, overlay)
             log.info(f"Overlay saved: {out_img}")
-            cv2.imshow(
-                f"Result [{idx+1}/{len(files)}]: {os.path.basename(f)}",
-                overlay
-            )
-            cv2.waitKey(800)
+            overlay_paths.append((out_img, os.path.basename(f), len(res)))
 
-    cv2.destroyAllWindows()
+            # In HSV mode show the result window; in YOLO mode skip popups
+            if not _SUPPRESS_POPUPS:
+                cv2.imshow(
+                    f"Result [{idx+1}/{len(files)}]: {os.path.basename(f)}",
+                    overlay
+                )
+                cv2.waitKey(800)
+
+    if not _SUPPRESS_POPUPS:
+        cv2.destroyAllWindows()
 
     if skipped:
         print(f"\n  {len(skipped)} image(s) skipped (no quarter detected):")
@@ -1008,11 +1120,26 @@ if __name__ == "__main__":
             "Pixel_to_mm_Used", "Pixel_to_mm"
         ]
         df   = df[[c for c in col_order if c in df.columns]]
-        xlsx = safe_save_excel(df, "straw_results.xlsx")
-        csv  = os.path.abspath("straw_results.csv")
-        df.to_csv(csv, index=False)
+
+        # Save Excel with embedded overlay images (YOLO mode)
+        # or plain Excel (HSV mode)
+        xlsx_path = os.path.abspath("straw_results.xlsx")
+        if mode == "yolo" and overlay_paths:
+            xlsx_path = save_excel_with_images(df, overlay_paths, xlsx_path)
+            print(f"\nOverlay images embedded in Excel on the 'Overlays' sheet.")
+        else:
+            try:
+                df.to_excel(xlsx_path, index=False)
+            except PermissionError:
+                ts        = time.strftime("%Y%m%d_%H%M%S")
+                name, ext = os.path.splitext(xlsx_path)
+                xlsx_path = f"{name}_{ts}{ext}"
+                df.to_excel(xlsx_path, index=False)
+
+        csv_path = os.path.abspath("straw_results.csv")
+        df.to_csv(csv_path, index=False)
         print_summary(df)
-        print(f"Results saved to:\n  Excel : {xlsx}\n  CSV   : {csv}")
+        print(f"Results saved to:\n  Excel : {xlsx_path}\n  CSV   : {csv_path}")
     else:
         log.warning("No straw detected.")
         print("\nNo straw detected. Check YOLO model path or HSV settings.")
