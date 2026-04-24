@@ -72,7 +72,7 @@ YOLO_CONF        = 0.5              # YOLO confidence threshold
 
 # --- Calibration ---
 CALIBRATION_MODE       = "auto"     # "auto" or "manual"
-CALIBRATION_PER_IMAGE  = False      # True = recalibrate each image
+CALIBRATION_PER_IMAGE  = True      # True = recalibrate each image
 QUARTER_CLASS_NAME     = "quarter"  # Must match your YOLO class label exactly
 QUARTER_DIAMETER_MM    = 24.26      # US quarter diameter in millimetres
 
