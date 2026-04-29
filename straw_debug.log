@@ -1,113 +1,49 @@
-2026-04-24 12:28:17,643 [INFO] === Straw Measurement Tool Started ===
-2026-04-24 12:28:17,643 [INFO] Detection mode     : YOLO
-2026-04-24 12:28:17,644 [INFO] Calibration mode   : AUTO
-2026-04-24 12:28:17,644 [INFO] Calibration per img: True
-2026-04-24 12:28:17,644 [INFO] YOLO model path    : best.pt
-2026-04-24 12:28:17,645 [INFO] Angle tolerance    : 35.0  |  Cluster radius: 80px
-2026-04-24 12:28:17,645 [INFO] Opening file picker...
-2026-04-24 12:28:30,435 [INFO] Selected 2 file(s)
-2026-04-24 12:28:42,608 [INFO] YOLO model loaded: best.pt
-2026-04-24 12:28:42,609 [INFO]   Classes: {0: 'quarter', 1: 'straw'}
-2026-04-24 12:28:42,609 [INFO] YOLO mode: debug popups suppressed. Overlay images will be embedded in Excel.
-2026-04-24 12:28:42,609 [INFO] 
-Image 1/2: C:/Users/Logan/Documents/VS_Code/AGST 492 project/Straw_Images/Dropbox/IMG_2730.jpg
-2026-04-24 12:28:42,930 [INFO]   Quarter ellipse: major=47.3px minor=40.6px avg=43.9px
-2026-04-24 12:28:42,931 [INFO]   Calibration: 24.26mm / 43.95px = 0.55200 mm/px [method=ellipse conf=0.84]
-2026-04-24 12:28:42,931 [INFO]   [IMG_2730.jpg] Auto-calibration OK: 0.55200 mm/px [ellipse]
-2026-04-24 12:28:42,932 [INFO] 
+2026-04-29 12:14:47,756 [INFO] === Straw Measurement Tool Started ===
+2026-04-29 12:14:47,757 [INFO] Detection mode      : YOLO
+2026-04-29 12:14:47,757 [INFO] Calibration mode    : AUTO
+2026-04-29 12:14:47,757 [INFO] Calibration per img : True
+2026-04-29 12:14:47,758 [INFO] YOLO model          : best_K_Fold.pt
+2026-04-29 12:14:47,758 [INFO] YOLO conf threshold : 0.5
+2026-04-29 12:14:47,758 [INFO] Length range (mm)   : 10 – 1500
+2026-04-29 12:14:47,759 [INFO] Angle tolerance     : 35.0°  Cluster radius: 80px
+2026-04-29 12:14:47,759 [INFO] Opening file picker…
+2026-04-29 12:14:51,321 [INFO] Selected 1 file(s)
+2026-04-29 12:15:03,321 [INFO] YOLO model loaded: best_K_Fold.pt
+2026-04-29 12:15:03,322 [INFO]   Classes: {0: 'quarter', 1: 'straw'}
+2026-04-29 12:15:03,322 [INFO] YOLO mode: popup windows suppressed. Overlays will be embedded in Excel.
+2026-04-29 12:15:03,322 [INFO] 
+Image 1/1: C:/Users/Logan/Documents/VS_Code/AGST 492 project/Straw_Images/Dropbox/IMG_2733.jpg
+2026-04-29 12:15:03,867 [INFO]   Quarter ellipse: d=43.5px
+2026-04-29 12:15:03,870 [INFO]   Calibration: 24.26mm / 43.48px = 0.55795 mm/px [ellipse conf=0.77]
+2026-04-29 12:15:03,870 [INFO]   [IMG_2733.jpg] Auto-calibration: 0.55795 mm/px [ellipse]
+2026-04-29 12:15:03,870 [INFO] 
 ============================================================
-2026-04-24 12:28:42,932 [INFO] Processing [YOLO]: IMG_2730.jpg
-2026-04-24 12:28:43,141 [DEBUG]   Straw idx=0 class=straw conf=0.95 mask_px=3691
-2026-04-24 12:28:43,144 [DEBUG]   Straw idx=1 class=straw conf=0.94 mask_px=3575
-2026-04-24 12:28:43,146 [DEBUG]   Straw idx=2 class=straw conf=0.90 mask_px=4063
-2026-04-24 12:28:43,149 [DEBUG]   Straw idx=3 class=straw conf=0.85 mask_px=4169
-2026-04-24 12:28:43,150 [DEBUG]   Skipping quarter detection (idx=4)
-2026-04-24 12:28:43,153 [DEBUG]   Straw idx=5 class=straw conf=0.76 mask_px=813
-2026-04-24 12:28:43,157 [INFO] YOLO instance masks returned: 5
-2026-04-24 12:28:43,157 [INFO] Masks to process: 5
-2026-04-24 12:28:43,170 [DEBUG]   Skeleton -- endpoints: 17  branch pts: 4  body: 412
-2026-04-24 12:28:44,162 [INFO]   Mask 0: overlap detected (4 branch pts, 17 endpoints)
-2026-04-24 12:28:44,163 [INFO]   Endpoint pairing: 8 nearby -> 4 pair(s)
-2026-04-24 12:28:44,163 [INFO]   Straw 0.1: 17.93mm | Straight | RECONSTRUCTED
-2026-04-24 12:28:44,175 [DEBUG]   Skeleton -- endpoints: 4  branch pts: 6  body: 199
-2026-04-24 12:28:44,410 [INFO]   Mask 1: overlap detected (6 branch pts, 4 endpoints)
-2026-04-24 12:28:44,410 [WARNING]   Mask 1: pairing failed -- falling back.
-2026-04-24 12:28:44,413 [INFO]   Straw 1: 115.31mm | Curved | HIGH
-2026-04-24 12:28:44,424 [DEBUG]   Skeleton -- endpoints: 8  branch pts: 15  body: 403
-2026-04-24 12:28:45,347 [INFO]   Mask 2: overlap detected (15 branch pts, 8 endpoints)
-2026-04-24 12:28:45,348 [WARNING]   Mask 2: pairing failed -- falling back.
-2026-04-24 12:28:45,353 [INFO]   Straw 2: 176.31mm | Straight | HIGH
-2026-04-24 12:28:45,365 [DEBUG]   Skeleton -- endpoints: 5  branch pts: 3  body: 395
-2026-04-24 12:28:46,209 [INFO]   Mask 3: overlap detected (3 branch pts, 5 endpoints)
-2026-04-24 12:28:46,209 [INFO]   Endpoint pairing: 4 nearby -> 1 pair(s)
-2026-04-24 12:28:46,210 [WARNING]   Mask 3: pairing failed -- falling back.
-2026-04-24 12:28:46,220 [DEBUG]   Skeleton -- endpoints: 4  branch pts: 6  body: 85
-2026-04-24 12:28:46,267 [INFO]   Mask 4: overlap detected (6 branch pts, 4 endpoints)
-2026-04-24 12:28:46,267 [INFO]   Endpoint pairing: 4 nearby -> 1 pair(s)
-2026-04-24 12:28:46,268 [INFO]   Straw 4.0: 25.09mm | Curved | RECONSTRUCTED
-2026-04-24 12:28:46,269 [INFO] Image done: 4 straw(s) measured from 5 mask(s).
-2026-04-24 12:28:46,279 [INFO] Overlay saved: C:\Users\Logan\Documents\VS_Code\AGST 492 project\Straw_Images\Dropbox\overlay_IMG_2730.jpg
-2026-04-24 12:28:46,280 [INFO] 
-Image 2/2: C:/Users/Logan/Documents/VS_Code/AGST 492 project/Straw_Images/Dropbox/IMG_2740.jpg
-2026-04-24 12:28:46,479 [INFO]   Quarter ellipse: major=44.8px minor=40.1px avg=42.5px
-2026-04-24 12:28:46,479 [INFO]   Calibration: 24.26mm / 42.50px = 0.57086 mm/px [method=ellipse conf=0.89]
-2026-04-24 12:28:46,479 [INFO]   [IMG_2740.jpg] Auto-calibration OK: 0.57086 mm/px [ellipse]
-2026-04-24 12:28:46,480 [INFO] 
-============================================================
-2026-04-24 12:28:46,480 [INFO] Processing [YOLO]: IMG_2740.jpg
-2026-04-24 12:28:46,705 [DEBUG]   Straw idx=0 class=straw conf=0.96 mask_px=1184
-2026-04-24 12:28:46,707 [DEBUG]   Straw idx=1 class=straw conf=0.96 mask_px=4125
-2026-04-24 12:28:46,710 [DEBUG]   Straw idx=2 class=straw conf=0.96 mask_px=4101
-2026-04-24 12:28:46,712 [DEBUG]   Straw idx=3 class=straw conf=0.94 mask_px=3053
-2026-04-24 12:28:46,715 [DEBUG]   Straw idx=4 class=straw conf=0.94 mask_px=2082
-2026-04-24 12:28:46,717 [DEBUG]   Straw idx=5 class=straw conf=0.93 mask_px=3287
-2026-04-24 12:28:46,717 [DEBUG]   Skipping quarter detection (idx=6)
-2026-04-24 12:28:46,720 [DEBUG]   Straw idx=7 class=straw conf=0.86 mask_px=868
-2026-04-24 12:28:46,723 [DEBUG]   Straw idx=8 class=straw conf=0.81 mask_px=3523
-2026-04-24 12:28:46,726 [DEBUG]   Straw idx=9 class=straw conf=0.69 mask_px=589
-2026-04-24 12:28:46,728 [DEBUG]   Straw idx=10 class=straw conf=0.67 mask_px=4693
-2026-04-24 12:28:46,730 [DEBUG]   Straw idx=11 class=straw conf=0.60 mask_px=1891
-2026-04-24 12:28:46,734 [INFO] YOLO instance masks returned: 11
-2026-04-24 12:28:46,734 [INFO] Masks to process: 11
-2026-04-24 12:28:46,744 [DEBUG]   Skeleton -- endpoints: 5  branch pts: 4  body: 218
-2026-04-24 12:28:47,030 [INFO]   Mask 0: overlap detected (4 branch pts, 5 endpoints)
-2026-04-24 12:28:47,031 [WARNING]   Mask 0: pairing failed -- falling back.
-2026-04-24 12:28:47,044 [DEBUG]   Skeleton -- endpoints: 9  branch pts: 17  body: 356
-2026-04-24 12:28:47,807 [INFO]   Mask 1: overlap detected (17 branch pts, 9 endpoints)
-2026-04-24 12:28:47,807 [WARNING]   Mask 1: pairing failed -- falling back.
-2026-04-24 12:28:47,823 [DEBUG]   Skeleton -- endpoints: 13  branch pts: 3  body: 458
-2026-04-24 12:28:48,977 [INFO]   Mask 2: overlap detected (3 branch pts, 13 endpoints)
-2026-04-24 12:28:48,978 [INFO]   Endpoint pairing: 12 nearby -> 6 pair(s)
-2026-04-24 12:28:48,979 [WARNING]   Mask 2: pairing failed -- falling back.
-2026-04-24 12:28:48,988 [DEBUG]   Skeleton -- endpoints: 2  branch pts: 0  body: 221
-2026-04-24 12:28:49,248 [INFO]   Straw 3: 152.51mm | Straight | HIGH
-2026-04-24 12:28:49,256 [DEBUG]   Skeleton -- endpoints: 2  branch pts: 0  body: 208
-2026-04-24 12:28:49,486 [INFO]   Straw 4: 142.48mm | Curved | HIGH
-2026-04-24 12:28:49,496 [DEBUG]   Skeleton -- endpoints: 4  branch pts: 8  body: 187
-2026-04-24 12:28:49,696 [INFO]   Mask 5: overlap detected (8 branch pts, 4 endpoints)
-2026-04-24 12:28:49,697 [WARNING]   Mask 5: pairing failed -- falling back.
-2026-04-24 12:28:49,702 [INFO]   Straw 5: 113.81mm | Curved | HIGH
-2026-04-24 12:28:49,716 [DEBUG]   Skeleton -- endpoints: 6  branch pts: 13  body: 81
-2026-04-24 12:28:49,768 [INFO]   Mask 6: overlap detected (13 branch pts, 6 endpoints)
-2026-04-24 12:28:49,768 [INFO]   Endpoint pairing: 6 nearby -> 2 pair(s)
-2026-04-24 12:28:49,770 [INFO]   Straw 6.0: 12.84mm | Curved | RECONSTRUCTED
-2026-04-24 12:28:49,771 [INFO]   Straw 6.1: 38.70mm | Straight | RECONSTRUCTED
-2026-04-24 12:28:49,780 [DEBUG]   Skeleton -- endpoints: 3  branch pts: 1  body: 352
-2026-04-24 12:28:50,443 [INFO]   Mask 7: overlap detected (1 branch pts, 3 endpoints)
-2026-04-24 12:28:50,444 [WARNING]   Mask 7: pairing failed -- falling back.
-2026-04-24 12:28:50,449 [INFO]   Straw 7: 245.73mm | Curved | HIGH
-2026-04-24 12:28:50,456 [DEBUG]   Skeleton -- endpoints: 5  branch pts: 4  body: 67
-2026-04-24 12:28:50,487 [INFO]   Mask 8: overlap detected (4 branch pts, 5 endpoints)
-2026-04-24 12:28:50,488 [INFO]   Endpoint pairing: 5 nearby -> 2 pair(s)
-2026-04-24 12:28:50,489 [INFO]   Straw 8.1: 34.00mm | Curved | RECONSTRUCTED
-2026-04-24 12:28:50,502 [DEBUG]   Skeleton -- endpoints: 6  branch pts: 8  body: 224
-2026-04-24 12:28:50,793 [INFO]   Mask 9: overlap detected (8 branch pts, 6 endpoints)
-2026-04-24 12:28:50,793 [INFO]   Endpoint pairing: 3 nearby -> 1 pair(s)
-2026-04-24 12:28:50,795 [INFO]   Straw 9.0: 38.13mm | Straight | RECONSTRUCTED
-2026-04-24 12:28:50,804 [DEBUG]   Skeleton -- endpoints: 2  branch pts: 0  body: 138
-2026-04-24 12:28:50,906 [INFO]   Straw 10: 81.95mm | Straight | MEDIUM
-2026-04-24 12:28:50,907 [INFO] Image done: 9 straw(s) measured from 11 mask(s).
-2026-04-24 12:28:50,918 [INFO] Overlay saved: C:\Users\Logan\Documents\VS_Code\AGST 492 project\Straw_Images\Dropbox\overlay_IMG_2740.jpg
-2026-04-24 12:28:50,972 [INFO]   Embedded overlay: C:\Users\Logan\Documents\VS_Code\AGST 492 project\Straw_Images\Dropbox\overlay_IMG_2730.jpg
-2026-04-24 12:28:50,979 [INFO]   Embedded overlay: C:\Users\Logan\Documents\VS_Code\AGST 492 project\Straw_Images\Dropbox\overlay_IMG_2740.jpg
-2026-04-24 12:28:51,046 [INFO] === Done in 33.40s ===
+2026-04-29 12:15:03,870 [INFO] Processing [YOLO]: IMG_2733.jpg
+2026-04-29 12:15:04,217 [DEBUG]   Raw YOLO detections: 9
+2026-04-29 12:15:04,229 [DEBUG]   Skipping quarter detection (idx=7)
+2026-04-29 12:15:04,235 [DEBUG]   Masks before overlap filter: 8
+2026-04-29 12:15:04,264 [INFO]   YOLO masks after overlap filter: 8
+2026-04-29 12:15:04,265 [INFO]   Masks to process: 8
+2026-04-29 12:15:04,282 [DEBUG]   Skeleton — endpoints:3  branches:1  body:536
+2026-04-29 12:15:04,282 [INFO]   [straw 1] Overlap detected (1 branch pts, 3 endpoints)
+2026-04-29 12:15:05,899 [DEBUG]   Skeleton — endpoints:2  branches:0  body:151
+2026-04-29 12:15:05,915 [DEBUG]   Skeleton — endpoints:2  branches:0  body:69
+2026-04-29 12:15:05,932 [DEBUG]   Skeleton — endpoints:6  branches:5  body:403
+2026-04-29 12:15:05,932 [INFO]   [straw 4] Overlap detected (5 branch pts, 6 endpoints)
+2026-04-29 12:15:06,913 [DEBUG]   Skeleton — endpoints:7  branches:17  body:441
+2026-04-29 12:15:06,913 [INFO]   [straw 5] Overlap detected (17 branch pts, 7 endpoints)
+2026-04-29 12:15:08,073 [DEBUG]   Skeleton — endpoints:4  branches:13  body:249
+2026-04-29 12:15:08,073 [INFO]   [straw 6] Overlap detected (13 branch pts, 4 endpoints)
+2026-04-29 12:15:08,505 [DEBUG]   Skeleton — endpoints:6  branches:16  body:90
+2026-04-29 12:15:08,505 [INFO]   [straw 7] Overlap detected (16 branch pts, 6 endpoints)
+2026-04-29 12:15:08,574 [INFO]   Straw 7.0: 15.89 mm | Curved | RECONSTRUCTED
+2026-04-29 12:15:08,575 [INFO]   Straw 7.1: 11.33 mm | Curved | RECONSTRUCTED
+2026-04-29 12:15:08,584 [DEBUG]   Skeleton — endpoints:5  branches:10  body:80
+2026-04-29 12:15:08,584 [INFO]   [straw 8] Overlap detected (10 branch pts, 5 endpoints)
+2026-04-29 12:15:08,634 [INFO]   Straw 8.0: 10.78 mm | Curved | RECONSTRUCTED
+2026-04-29 12:15:08,635 [INFO]   Straw 8.1: 7.29 mm | Curved | RECONSTRUCTED
+2026-04-29 12:15:08,635 [INFO]   [8.1] REJECTED — too short (7.3mm)
+2026-04-29 12:15:08,635 [INFO]   Done: 9 straw(s) from 8 mask(s).
+2026-04-29 12:15:08,647 [INFO]   Overlay saved: C:\Users\Logan\Documents\VS_Code\AGST 492 project\Straw_Images\Dropbox\overlay_IMG_2733.jpg
+2026-04-29 12:15:08,688 [INFO]   Embedded overlay: C:\Users\Logan\Documents\VS_Code\AGST 492 project\Straw_Images\Dropbox\overlay_IMG_2733.jpg
+2026-04-29 12:15:08,721 [INFO] === Done in 20.97s ===

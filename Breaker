@@ -67,7 +67,7 @@ from openpyxl.utils import get_column_letter
 # ============================================================
 
 DETECTION_MODE   = "yolo"           # "hsv" or "yolo"
-YOLO_MODEL_PATH  = "best.pt"        # Path to your trained instance seg model
+YOLO_MODEL_PATH  = "best_K_F1.pt"        # Path to your trained instance seg model
 YOLO_CONF        = 0.5              # YOLO confidence threshold
 
 # --- Calibration ---
@@ -77,7 +77,7 @@ QUARTER_CLASS_NAME     = "quarter"  # Must match your YOLO class label exactly
 QUARTER_DIAMETER_MM    = 24.26      # US quarter diameter in millimetres
 
 PIXEL_TO_MM      = 0.1              # Fallback / manual default (mm per pixel)
-MIN_CONTOUR_AREA = 100              # Minimum contour area in pixels
+MIN_CONTOUR_AREA = 10              # Minimum contour area in pixels
 CURVE_THRESHOLD  = 1.1              # path/euclidean ratio -> "Curved"
 DEBUG_MODE       = True             # Show debug windows (suppressed in YOLO mode)
 LOG_FILE         = "straw_debug.log"
@@ -95,7 +95,7 @@ STRAW_HSV_UPPER = np.array([35, 255, 255])
 # --- Endpoint clustering parameters ---
 ANGLE_TOLERANCE_DEG  = 35.0
 CLUSTER_RADIUS_PX    = 80
-MIN_PATH_LENGTH_PX   = 20
+MIN_PATH_LENGTH_PX   = 10
 
 # Module-level flag — set True automatically in YOLO mode.
 # Suppresses all cv2.imshow popup windows.
